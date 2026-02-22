@@ -55,13 +55,12 @@ def words_to_srt(segments: list, fps: float = 24.0) -> str:
     Returns:
         SRT file content as string
     """
+    max_words = cfg["max_words_per_caption"]
     max_chars = cfg["max_chars_per_line"]
     max_lines = cfg["max_lines"]
     min_dur = cfg["min_duration_s"]
     max_dur = cfg["max_duration_s"]
     gap_frames = cfg["gap_frames"]
-    confidence_threshold = cfg["confidence_threshold"]
-    highlight = cfg["highlight_low_confidence"]
 
     gap_s = gap_frames / fps
 
@@ -81,13 +80,12 @@ def words_to_srt(segments: list, fps: float = 24.0) -> str:
     for word in all_words:
         w_text = word.text
 
-        # Mark low-confidence words
-        if highlight and word.probability < confidence_threshold:
-            w_text = f"[{w_text}?]"
-
         # Check if adding this word exceeds our limits
         test_text = f"{block_text} {w_text}".strip()
         test_lines = _split_into_lines(test_text, max_chars)
+
+        # Check word count limit
+        too_many_words = max_words > 0 and len(block_words) >= max_words
 
         # Check timing: would this block exceed max duration?
         if block_words:
@@ -115,7 +113,7 @@ def words_to_srt(segments: list, fps: float = 24.0) -> str:
 
         # Flush current block if needed
         should_flush = block_words and (
-            too_many_lines or too_long or
+            too_many_words or too_many_lines or too_long or
             (natural_break and len(block_text) > 20) or
             (punct_break and len(block_text) > 20)
         )

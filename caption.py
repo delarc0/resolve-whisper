@@ -209,6 +209,10 @@ def run_file_mode(args):
 
     if args.language:
         cfg["language"] = args.language
+    if args.max_words is not None:
+        cfg["max_words_per_caption"] = args.max_words
+    if args.max_chars is not None:
+        cfg["max_chars_per_line"] = args.max_chars
 
     input_path = os.path.abspath(args.file)
     if not os.path.exists(input_path):
@@ -231,9 +235,13 @@ def run_file_mode(args):
     load_time = time.time() - t0
     log.info(f"Model loaded in {load_time:.1f}s")
 
+    def _report_progress(pct):
+        # Machine-readable line for resolve_script.py to parse
+        print(f"PROGRESS:{pct}", flush=True)
+
     log.info("Transcribing...")
     t0 = time.time()
-    segments = transcriber.transcribe(input_path)
+    segments = transcriber.transcribe(input_path, on_progress=_report_progress)
     tx_time = time.time() - t0
 
     word_count = sum(len(s.words) for s in segments)
@@ -302,6 +310,16 @@ Examples:
         "--fps",
         type=float,
         help="Frame rate for subtitle gap calculation (default: 24.0 or from Resolve)",
+    )
+    parser.add_argument(
+        "--max-words",
+        type=int,
+        help="Max words per caption (0=auto). Overrides config.",
+    )
+    parser.add_argument(
+        "--max-chars",
+        type=int,
+        help="Max characters per line. Overrides config.",
     )
 
     args = parser.parse_args()

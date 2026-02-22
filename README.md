@@ -1,6 +1,8 @@
-# Resolve Whisper
+# LAB37 TOOLS: Resolve Whisper
 
-AI-powered captions for DaVinci Resolve Studio. Runs locally on your GPU - no cloud, no subscription, no waiting.
+AI-powered captions for DaVinci Resolve Studio. Runs locally on your GPU. No cloud, no subscription, no waiting.
+
+Built by LAB37 // lab37.se
 
 ---
 
@@ -16,19 +18,20 @@ AI-powered captions for DaVinci Resolve Studio. Runs locally on your GPU - no cl
 2. Open Terminal in this folder and run: `./setup.sh`
 3. Wait for it to finish
 
-That's it. The setup installs everything and adds the script to Resolve automatically.
+Setup installs everything and adds the script to Resolve automatically.
 
 ---
 
 ## Use
 
 1. Open **DaVinci Resolve Studio** and select a timeline
-2. Go to **Workspace > Scripts > Resolve Whisper**
-3. Wait for the progress window to finish (usually under a minute)
-4. A Captions folder opens on your Desktop with the `.srt` file
-5. In Resolve: **File > Import > Subtitle** and select the `.srt`
+2. Set your **in and out points** (I and O keys) for the section you want captioned
+3. Go to **Workspace > Scripts > LAB37 Resolve Whisper**
+4. Wait for the progress window to finish
+5. A Captions folder opens on your Desktop with the `.srt` file
+6. In Resolve: **File > Import > Subtitle** and select the `.srt`
 
-Captions appear on a subtitle track in your timeline. Done.
+Captions appear on a subtitle track in your timeline.
 
 ---
 
@@ -88,3 +91,7 @@ SRT file appears next to the source file.
 - NVIDIA GPU with CUDA (Windows) or Apple Silicon (Mac)
 - ~3 GB disk space (AI model + dependencies)
 - ~2-3 GB VRAM during transcription
+
+---
+
+LAB37 TOOLS // lab37.se

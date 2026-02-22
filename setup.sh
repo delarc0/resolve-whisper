@@ -2,8 +2,8 @@
 set -e
 
 echo ""
-echo "  ========================================"
-echo "   Resolve Whisper - Setup"
+echo "  LAB37 TOOLS: Resolve Whisper"
+echo "  AI-powered captions for DaVinci Resolve"
 echo "  ========================================"
 echo ""
 
@@ -27,12 +27,18 @@ echo "  [2/4] Installing dependencies..."
 "$APP_DIR/.venv/bin/pip" install --quiet --upgrade pip
 "$APP_DIR/.venv/bin/pip" install --quiet mlx mlx-whisper soundfile resampy numpy
 
+# Verify
+"$APP_DIR/.venv/bin/python3" -c "import mlx_whisper; print('  mlx-whisper OK')" || {
+    echo "  ERROR: Dependencies failed to install."
+    exit 1
+}
+
 # Resolve Scripts folder
 RESOLVE_SCRIPTS="$HOME/Library/Application Support/Blackmagic Design/DaVinci Resolve/Fusion/Scripts/Utility"
 
-echo "  [3/4] Installing Resolve script..."
+echo "  [3/4] Installing script to Resolve..."
 mkdir -p "$RESOLVE_SCRIPTS"
-cp "$APP_DIR/resolve_script.py" "$RESOLVE_SCRIPTS/Resolve Whisper.py"
+cp "$APP_DIR/resolve_script.py" "$RESOLVE_SCRIPTS/LAB37 Resolve Whisper.py"
 
 # Write pointer file
 echo "$APP_DIR" > "$RESOLVE_SCRIPTS/resolve_whisper_path.txt"
@@ -45,15 +51,17 @@ mlx_whisper.transcribe(np.zeros(16000, dtype=np.float32), path_or_hf_repo='mlx-c
 
 echo ""
 echo "  ========================================"
-echo "   DONE"
+echo "   SETUP COMPLETE"
 echo "  ========================================"
 echo ""
 echo "  How to use:"
 echo "    1. Open DaVinci Resolve Studio"
-echo "    2. Open a project and select a timeline"
-echo "    3. Go to: Workspace > Scripts > Resolve Whisper"
-echo "    4. Wait for transcription to finish"
-echo "    5. SRT file opens automatically"
+echo "    2. Select a timeline, set in/out points (I and O)"
+echo "    3. Workspace > Scripts > LAB37 Resolve Whisper"
+echo "    4. Wait for the progress window to finish"
+echo "    5. File > Import > Subtitle to add the .srt"
 echo ""
 echo "  Captions are saved to: ~/Desktop/Captions/"
+echo ""
+echo "  LAB37 TOOLS // lab37.se"
 echo ""

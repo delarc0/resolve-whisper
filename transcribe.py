@@ -45,12 +45,18 @@ class Segment:
 
 
 def clean_word(text: str) -> str:
-    """Clean a single word - remove filler words."""
+    """Clean a single word - remove filler words and Whisper annotations."""
     stripped = text.strip()
     if not stripped:
         return ""
+    # Strip Whisper annotations like [Music], [Applause], [inaudible]
+    if stripped.startswith("[") and stripped.endswith("]"):
+        return ""
+    # Remove stray brackets/question-mark artifacts
+    stripped = stripped.strip("[]")
+    if not stripped:
+        return ""
     lower = stripped.lower().strip(".,!?;:")
-    # Check if the entire word is a filler
     if FILLER_WORDS.fullmatch(lower):
         return ""
     return stripped
@@ -86,26 +92,27 @@ class Transcriber:
             )
         log.info("Model loaded.")
 
-    def transcribe(self, audio_path: str) -> list:
+    def transcribe(self, audio_path: str, on_progress=None) -> list:
         """
         Transcribe an audio file and return segments with word-level timestamps.
 
         Args:
             audio_path: Path to WAV/audio file
+            on_progress: Optional callback(percent: int) called as segments complete
 
         Returns:
             List of Segment objects, each containing Word objects with timing.
         """
         try:
             if IS_MAC:
-                return self._transcribe_mlx(audio_path)
+                return self._transcribe_mlx(audio_path, on_progress)
             else:
-                return self._transcribe_faster_whisper(audio_path)
+                return self._transcribe_faster_whisper(audio_path, on_progress)
         except Exception as e:
             log.error(f"Transcription failed: {e}")
             return []
 
-    def _transcribe_faster_whisper(self, audio_path: str) -> list:
+    def _transcribe_faster_whisper(self, audio_path: str, on_progress=None) -> list:
         raw_segments, info = self.model.transcribe(
             audio_path,
             beam_size=cfg["beam_size"],
@@ -118,11 +125,21 @@ class Transcriber:
             ),
         )
 
+        duration = info.duration if info else 0.0
+
         if cfg["language"] is None and info:
             log.info(f"Detected language: {info.language} ({info.language_probability:.0%})")
 
         segments = []
+        last_pct = -1
         for seg in raw_segments:
+            # Report progress based on segment position vs total duration
+            if on_progress and duration > 0:
+                pct = min(int(seg.end / duration * 100), 99)
+                if pct > last_pct:
+                    last_pct = pct
+                    on_progress(pct)
+
             if is_hallucination(seg.text):
                 continue
 
@@ -148,9 +165,11 @@ class Transcriber:
                     words=words,
                 ))
 
+        if on_progress:
+            on_progress(100)
         return segments
 
-    def _transcribe_mlx(self, audio_path: str) -> list:
+    def _transcribe_mlx(self, audio_path: str, on_progress=None) -> list:
         import numpy as np
         import soundfile as sf
 
@@ -172,8 +191,19 @@ class Transcriber:
         if cfg["language"] is None and result.get("language"):
             log.info(f"Detected language: {result['language']}")
 
+        duration = len(audio) / 16000.0  # audio is already 16kHz at this point
+
         segments = []
-        for seg in result.get("segments", []):
+        raw_segs = result.get("segments", [])
+        last_pct = -1
+        for seg in raw_segs:
+            seg_end = seg.get("end", 0.0)
+            if on_progress and duration > 0:
+                pct = min(int(seg_end / duration * 100), 99)
+                if pct > last_pct:
+                    last_pct = pct
+                    on_progress(pct)
+
             seg_text = seg.get("text", "").strip()
             if is_hallucination(seg_text):
                 continue
@@ -199,4 +229,6 @@ class Transcriber:
                     words=words,
                 ))
 
+        if on_progress:
+            on_progress(100)
         return segments
