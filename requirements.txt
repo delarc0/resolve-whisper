@@ -1,0 +1,14 @@
+# Resolve Whisper - dependencies
+#
+# GPU backend (install ONE based on platform):
+#
+# Windows (CUDA):
+#   pip install torch --index-url https://download.pytorch.org/whl/cu121
+#   pip install faster-whisper
+#
+# Mac (Metal):
+#   pip install mlx mlx-whisper soundfile resampy
+
+# Core
+faster-whisper>=1.0.0
+numpy
