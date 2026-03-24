@@ -14,6 +14,16 @@ if ! command -v python3 &>/dev/null; then
     exit 1
 fi
 
+# Check Python version >= 3.10
+PY_VER=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
+PY_MAJ=$(echo "$PY_VER" | cut -d. -f1)
+PY_MIN=$(echo "$PY_VER" | cut -d. -f2)
+if [ "$PY_MAJ" -lt 3 ] || ([ "$PY_MAJ" -eq 3 ] && [ "$PY_MIN" -lt 10 ]); then
+    echo "  ERROR: Python 3.10+ required. Found: $PY_VER"
+    exit 1
+fi
+echo "  Python $PY_VER OK"
+
 APP_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 echo "  [1/4] Creating virtual environment..."
@@ -33,8 +43,23 @@ echo "  [2/4] Installing dependencies..."
     exit 1
 }
 
-# Resolve Scripts folder
-RESOLVE_SCRIPTS="$HOME/Library/Application Support/Blackmagic Design/DaVinci Resolve/Fusion/Scripts/Utility"
+# Resolve Scripts folder - check multiple paths (varies by Resolve version)
+RESOLVE_SCRIPTS=""
+CANDIDATES=(
+    "$HOME/Library/Application Support/Blackmagic Design/DaVinci Resolve/Fusion/Scripts/Utility"
+    "$HOME/Library/Application Support/Blackmagic Design/DaVinci Resolve/Support/Fusion/Scripts/Utility"
+)
+for candidate in "${CANDIDATES[@]}"; do
+    parent_dir="$(dirname "$candidate")"
+    if [ -d "$parent_dir" ]; then
+        RESOLVE_SCRIPTS="$candidate"
+        break
+    fi
+done
+# Fall back to the most common path
+if [ -z "$RESOLVE_SCRIPTS" ]; then
+    RESOLVE_SCRIPTS="${CANDIDATES[0]}"
+fi
 
 echo "  [3/4] Installing script to Resolve..."
 mkdir -p "$RESOLVE_SCRIPTS"

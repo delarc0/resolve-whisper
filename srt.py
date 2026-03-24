@@ -2,6 +2,7 @@
 SRT subtitle file generation from word-level timestamps.
 Groups words into readable caption blocks with proper timing.
 """
+import json
 import logging
 from config import cfg
 
@@ -10,10 +11,15 @@ log = logging.getLogger(__name__)
 
 def _format_timestamp(seconds: float) -> str:
     """Convert seconds to SRT timestamp format: HH:MM:SS,mmm"""
-    h = int(seconds // 3600)
-    m = int((seconds % 3600) // 60)
-    s = int(seconds % 60)
-    ms = int(round((seconds % 1) * 1000))
+    if seconds < 0:
+        seconds = 0.0
+    total_ms = round(seconds * 1000)
+    h = total_ms // 3_600_000
+    total_ms %= 3_600_000
+    m = total_ms // 60_000
+    total_ms %= 60_000
+    s = total_ms // 1000
+    ms = total_ms % 1000
     return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
 
@@ -38,22 +44,12 @@ def _split_into_lines(text: str, max_chars: int) -> list:
     return lines
 
 
-def words_to_srt(segments: list, fps: float = 24.0) -> str:
+def words_to_captions(segments: list, fps: float = 24.0) -> list:
     """
-    Convert transcription segments into SRT subtitle format.
+    Group transcription segments into caption blocks.
 
-    Groups words into caption blocks based on:
-    - Max characters per line
-    - Max lines per caption
-    - Min/max duration
-    - Natural pause points (punctuation, timing gaps)
-
-    Args:
-        segments: List of Segment objects from transcribe.py
-        fps: Timeline frame rate (for gap calculation)
-
-    Returns:
-        SRT file content as string
+    Returns list of dicts: [{"start": float, "end": float, "text": str}, ...]
+    Each dict represents one caption with timing in seconds.
     """
     max_words = cfg["max_words_per_caption"]
     max_chars = cfg["max_chars_per_line"]
@@ -62,7 +58,7 @@ def words_to_srt(segments: list, fps: float = 24.0) -> str:
     max_dur = cfg["max_duration_s"]
     gap_frames = cfg["gap_frames"]
 
-    gap_s = gap_frames / fps
+    gap_s = gap_frames / fps if fps > 0 else gap_frames / 24.0
 
     # Flatten all words from all segments
     all_words = []
@@ -70,7 +66,7 @@ def words_to_srt(segments: list, fps: float = 24.0) -> str:
         all_words.extend(seg.words)
 
     if not all_words:
-        return ""
+        return []
 
     # Group words into caption blocks
     captions = []
@@ -97,15 +93,19 @@ def words_to_srt(segments: list, fps: float = 24.0) -> str:
         # Check if too many lines
         too_many_lines = len(test_lines) > max_lines
 
-        # Check for natural break: big pause between words (>0.5s)
+        # Check pause between this word and the previous one
         if block_words:
             pause = word.start - block_words[-1].end
-            natural_break = pause > 0.5
         else:
-            natural_break = False
+            pause = 0.0
 
-        # Check for punctuation break at end of previous word
-        if block_words:
+        # Natural break: big pause in speech (>0.5s) = always split
+        natural_break = block_words and pause > 0.5
+
+        # Punctuation break: only trust it when there's also a pause (>0.2s)
+        # Whisper often puts periods where commas belong, so punctuation
+        # alone isn't reliable enough to split on
+        if block_words and pause > 0.2:
             prev = block_words[-1].text
             punct_break = prev.rstrip().endswith((".", "!", "?", ":", ";"))
         else:
@@ -114,8 +114,8 @@ def words_to_srt(segments: list, fps: float = 24.0) -> str:
         # Flush current block if needed
         should_flush = block_words and (
             too_many_words or too_many_lines or too_long or
-            (natural_break and len(block_text) > 20) or
-            (punct_break and len(block_text) > 20)
+            natural_break or
+            punct_break
         )
 
         if should_flush:
@@ -144,17 +144,30 @@ def words_to_srt(segments: list, fps: float = 24.0) -> str:
         if dur < min_dur:
             cap["end"] = cap["start"] + min_dur
 
-        # Add gap before next caption
+        # Ensure end never overlaps with next caption's start
         if i < len(captions) - 1:
             next_start = captions[i + 1]["start"]
             if cap["end"] + gap_s > next_start:
                 cap["end"] = max(cap["start"] + 0.1, next_start - gap_s)
+            # Hard clamp: never exceed next caption's start
+            if cap["end"] > next_start:
+                cap["end"] = next_start
 
-    # Format as SRT
+    return captions
+
+
+def words_to_srt(segments: list, fps: float = 24.0) -> str:
+    """Convert transcription segments into SRT subtitle format."""
+    captions = words_to_captions(segments, fps)
+    if not captions:
+        return ""
+
+    max_chars = cfg["max_chars_per_line"]
+    max_lines = cfg["max_lines"]
+
     srt_lines = []
     for i, cap in enumerate(captions, 1):
         lines = _split_into_lines(cap["text"], max_chars)
-        # Limit to max_lines
         display = lines[:max_lines]
 
         srt_lines.append(str(i))
@@ -174,10 +187,26 @@ def write_srt(segments: list, output_path: str, fps: float = 24.0):
         log.warning("No captions generated - empty transcription.")
         return False
 
-    with open(output_path, "w", encoding="utf-8") as f:
+    with open(output_path, "w", encoding="utf-8-sig") as f:
         f.write(content)
+        if not content.endswith("\n"):
+            f.write("\n")
 
-    # Count captions
-    count = content.count("\n\n")
+    # Count captions (count SRT sequence numbers: lines that are just a number)
+    count = sum(1 for line in content.split("\n") if line.strip().isdigit())
     log.info(f"Wrote {count} captions to {output_path}")
+    return True
+
+
+def write_captions_json(segments: list, output_path: str, fps: float = 24.0):
+    """Generate structured caption data and write to JSON file."""
+    captions = words_to_captions(segments, fps)
+    if not captions:
+        log.warning("No captions generated - empty transcription.")
+        return False
+
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(captions, f, ensure_ascii=False)
+
+    log.info(f"Wrote {len(captions)} captions to {output_path}")
     return True

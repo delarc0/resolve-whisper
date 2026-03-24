@@ -1,14 +1,21 @@
 # Resolve Whisper - dependencies
 #
-# GPU backend (install ONE based on platform):
+# The setup scripts (setup.bat / setup.sh) handle platform-specific
+# installs automatically. Use those for the recommended install path.
+#
+# Manual install (CLI --file mode only):
 #
 # Windows (CUDA):
-#   pip install torch --index-url https://download.pytorch.org/whl/cu121
-#   pip install faster-whisper
+#   pip install torch
+#   pip install -r requirements.txt
 #
-# Mac (Metal):
-#   pip install mlx mlx-whisper soundfile resampy
+# Windows (no NVIDIA GPU):
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+#   pip install -r requirements.txt
+#
+# Mac (Apple Silicon):
+#   pip install -r requirements-mac.txt
 
-# Core
+# Core (Windows / Linux)
 faster-whisper>=1.0.0
 numpy

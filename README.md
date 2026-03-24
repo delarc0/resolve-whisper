@@ -43,10 +43,9 @@ After running once, a `caption_config.json` file appears in the install folder. 
 |---|---|---|
 | `language` | `null` (auto) | Force a language: `"sv"`, `"en"`, `"fi"`, etc. |
 | `max_chars_per_line` | `42` | Characters per subtitle line |
-| `max_lines` | `2` | Lines per subtitle block |
+| `max_lines` | `1` | Lines per subtitle block |
 | `min_duration_s` | `1.0` | Shortest a subtitle stays on screen (seconds) |
 | `max_duration_s` | `7.0` | Longest a subtitle stays on screen (seconds) |
-| `highlight_low_confidence` | `true` | Marks words the AI was unsure about with `[brackets?]` |
 
 Most people won't need to change anything. If transcription quality is bad, try setting `language` to your language instead of auto-detect.
 

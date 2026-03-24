@@ -3,7 +3,7 @@ setlocal
 
 echo.
 echo   ___       _   ___  ____  _____
-echo  / / |     / / / _ )/__  //___  /
+echo  / / ^|     / / / _ )/__  //___  /
 echo / /  ^|    / / / _  ^|  / /    / /
 echo / /___^|   / / / ____/ / /    / /
 echo /_____/  /_/ /_/     /_/    /_/
@@ -23,6 +23,22 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 
+:: Check Python version >= 3.10
+for /f "tokens=2 delims= " %%v in ('python --version 2^>^&1') do set "PYVER=%%v"
+for /f "tokens=1,2 delims=." %%a in ("%PYVER%") do (
+    if %%a LSS 3 (
+        echo  ERROR: Python 3.10+ required. Found: %PYVER%
+        pause
+        exit /b 1
+    )
+    if %%a EQU 3 if %%b LSS 10 (
+        echo  ERROR: Python 3.10+ required. Found: %PYVER%
+        pause
+        exit /b 1
+    )
+)
+echo  Python %PYVER% OK
+
 :: Get this script's directory
 set "APP_DIR=%~dp0"
 set "APP_DIR=%APP_DIR:~0,-1%"
@@ -36,7 +52,29 @@ if not exist "%APP_DIR%\.venv" (
 
 echo  [2/4] Installing dependencies (this takes a few minutes)...
 "%APP_DIR%\.venv\Scripts\python.exe" -m pip install --quiet --upgrade pip
-"%APP_DIR%\.venv\Scripts\python.exe" -m pip install --quiet torch --index-url https://download.pytorch.org/whl/cu121
+
+:: Install PyTorch - try default (includes latest CUDA), fall back to cu121
+"%APP_DIR%\.venv\Scripts\python.exe" -m pip install --quiet torch 2>nul
+"%APP_DIR%\.venv\Scripts\python.exe" -c "import torch; assert torch.cuda.is_available()" >nul 2>&1
+if %errorlevel% equ 0 goto :torch_ok
+
+echo         Default torch has no CUDA, trying cu121 index...
+"%APP_DIR%\.venv\Scripts\python.exe" -m pip install --quiet --force-reinstall torch --index-url https://download.pytorch.org/whl/cu121 2>nul
+"%APP_DIR%\.venv\Scripts\python.exe" -c "import torch; assert torch.cuda.is_available()" >nul 2>&1
+if %errorlevel% equ 0 goto :torch_cu121_ok
+
+echo         No NVIDIA GPU detected. Will run in CPU mode (slower but works).
+goto :torch_done
+
+:torch_cu121_ok
+echo         CUDA 12.1 torch installed OK.
+goto :torch_done
+
+:torch_ok
+echo         CUDA torch installed OK.
+
+:torch_done
+
 "%APP_DIR%\.venv\Scripts\python.exe" -m pip install --quiet faster-whisper numpy
 
 :: Verify install
