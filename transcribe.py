@@ -11,9 +11,11 @@ from config import cfg, MODEL_SIZE, DEVICE, COMPUTE_TYPE, IS_MAC
 log = logging.getLogger(__name__)
 
 # Filler words to strip (Swedish + English)
+# Note: "typ" removed -- it is a real Swedish word ("type/kind of")
+# Note: "you know" removed -- fullmatch on single words can never match it
 FILLER_WORDS = re.compile(
-    r"(?<!\w)(um|uh|uhm|hmm|ah|eh|oh|you know|"
-    r"liksom|typ|asså|alltså|öh|äh)(?!\w)",
+    r"(um|uh|uhm|hmm|ah|eh|oh|"
+    r"liksom|asså|alltså|öh|äh)",
     re.IGNORECASE,
 )
 
@@ -64,7 +66,7 @@ def clean_word(text: str) -> str:
 
 def is_hallucination(text: str) -> bool:
     """Check if a full segment is a known hallucination."""
-    lower = text.lower().strip().strip(".")
+    lower = text.lower().strip().strip(".,!?;:…")
     return lower in HALLUCINATIONS
 
 
@@ -76,20 +78,44 @@ class Transcriber:
             self.model = None
             log.info(f"Loading model '{MODEL_SIZE}' with MLX (Metal)...")
             # Warm up with 1s silence
-            import numpy as np
-            self._mlx.transcribe(
-                np.zeros(16000, dtype=np.float32),
-                path_or_hf_repo=MODEL_SIZE,
-            )
+            try:
+                import numpy as np
+                self._mlx.transcribe(
+                    np.zeros(16000, dtype=np.float32),
+                    path_or_hf_repo=MODEL_SIZE,
+                )
+            except Exception as e:
+                log.error(f"MLX model warm-up failed: {e}")
+                raise
         else:
             from faster_whisper import WhisperModel
             self._mlx = None
             log.info(f"Loading model '{MODEL_SIZE}' on {DEVICE} ({COMPUTE_TYPE})...")
-            self.model = WhisperModel(
-                MODEL_SIZE,
-                device=DEVICE,
-                compute_type=COMPUTE_TYPE,
-            )
+            try:
+                self.model = WhisperModel(
+                    MODEL_SIZE,
+                    device=DEVICE,
+                    compute_type=COMPUTE_TYPE,
+                )
+            except Exception as e:
+                if DEVICE == "cuda":
+                    err_str = str(e).lower()
+                    if "out of memory" in err_str or "oom" in err_str:
+                        log.error("GPU out of memory. Close other GPU apps.")
+                    else:
+                        log.warning(f"CUDA init failed: {e}")
+                    log.info("Falling back to CPU mode (slower but compatible)...")
+                    try:
+                        self.model = WhisperModel(
+                            MODEL_SIZE,
+                            device="cpu",
+                            compute_type="int8",
+                        )
+                    except Exception as cpu_err:
+                        log.error(f"CPU fallback also failed: {cpu_err}")
+                        raise
+                else:
+                    raise
         log.info("Model loaded.")
 
     def transcribe(self, audio_path: str, on_progress=None) -> list:
@@ -113,17 +139,25 @@ class Transcriber:
             return []
 
     def _transcribe_faster_whisper(self, audio_path: str, on_progress=None) -> list:
-        raw_segments, info = self.model.transcribe(
-            audio_path,
+        kwargs = dict(
             beam_size=cfg["beam_size"],
             language=cfg["language"],
             word_timestamps=True,
+            condition_on_previous_text=True,
+            patience=2.0,
+            hallucination_silence_threshold=2.0,
             vad_filter=True,
             vad_parameters=dict(
                 min_silence_duration_ms=500,
-                speech_pad_ms=200,
+                speech_pad_ms=400,
             ),
         )
+
+        # Optional: initial prompt for domain/style hints
+        if cfg.get("initial_prompt"):
+            kwargs["initial_prompt"] = cfg["initial_prompt"]
+
+        raw_segments, info = self.model.transcribe(audio_path, **kwargs)
 
         duration = info.duration if info else 0.0
 
@@ -135,10 +169,13 @@ class Transcriber:
         for seg in raw_segments:
             # Report progress based on segment position vs total duration
             if on_progress and duration > 0:
-                pct = min(int(seg.end / duration * 100), 99)
-                if pct > last_pct:
-                    last_pct = pct
-                    on_progress(pct)
+                try:
+                    pct = min(int(seg.end / duration * 100), 99)
+                    if pct > last_pct:
+                        last_pct = pct
+                        on_progress(pct)
+                except Exception:
+                    pass
 
             if is_hallucination(seg.text):
                 continue
@@ -165,8 +202,11 @@ class Transcriber:
                     words=words,
                 ))
 
-        if on_progress:
-            on_progress(100)
+        try:
+            if on_progress:
+                on_progress(100)
+        except Exception:
+            pass
         return segments
 
     def _transcribe_mlx(self, audio_path: str, on_progress=None) -> list:
@@ -199,10 +239,13 @@ class Transcriber:
         for seg in raw_segs:
             seg_end = seg.get("end", 0.0)
             if on_progress and duration > 0:
-                pct = min(int(seg_end / duration * 100), 99)
-                if pct > last_pct:
-                    last_pct = pct
-                    on_progress(pct)
+                try:
+                    pct = min(int(seg_end / duration * 100), 99)
+                    if pct > last_pct:
+                        last_pct = pct
+                        on_progress(pct)
+                except Exception:
+                    pass
 
             seg_text = seg.get("text", "").strip()
             if is_hallucination(seg_text):
@@ -210,7 +253,7 @@ class Transcriber:
 
             words = []
             for w in seg.get("words", []):
-                cleaned = clean_word(w.get("word", ""))
+                cleaned = clean_word(w.get("word", "") or w.get("text", ""))
                 if cleaned:
                     words.append(Word(
                         text=cleaned,
@@ -229,6 +272,9 @@ class Transcriber:
                     words=words,
                 ))
 
-        if on_progress:
-            on_progress(100)
+        try:
+            if on_progress:
+                on_progress(100)
+        except Exception:
+            pass
         return segments

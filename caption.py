@@ -72,24 +72,47 @@ def get_timeline_info(resolve):
 
 
 def render_audio(project, timeline, output_dir: str) -> str:
-    """Render timeline audio as WAV file via Resolve's render API."""
+    """Render timeline audio via Resolve's render API."""
     timeline_name = timeline.GetName()
     safe_name = "".join(c if c.isalnum() or c in " -_" else "_" for c in timeline_name)
+    if not safe_name.strip():
+        safe_name = "timeline_audio"
     wav_name = f"{safe_name}_audio"
-    wav_path = os.path.join(output_dir, f"{wav_name}.wav")
 
     log.info("Rendering timeline audio...")
 
+    # Discover available codecs for Wave format
+    _format_set = False
+    try:
+        codecs = project.GetRenderCodecs("Wave")
+        if codecs:
+            codec_key = list(codecs.keys())[0]
+            if project.SetCurrentRenderFormatAndCodec("Wave", codec_key):
+                log.info(f"Render format set: Wave/{codec_key}")
+                _format_set = True
+    except Exception:
+        pass
+
+    if not _format_set:
+        for fmt, codec in [("Wave", "LinearPCM"), ("wav", "LinearPCM"), ("Wave", "PCM")]:
+            try:
+                if project.SetCurrentRenderFormatAndCodec(fmt, codec):
+                    log.info(f"Render format set (fallback): {fmt}/{codec}")
+                    _format_set = True
+                    break
+            except Exception:
+                pass
+
+    if not _format_set:
+        log.warning("Could not set WAV format, using Resolve default")
+
+    # Don't set AudioBitDepth/AudioSampleRate -- they can break rendering
+    # and faster-whisper handles any sample rate internally
     project.SetRenderSettings({
         "ExportAudio": True,
         "ExportVideo": False,
         "TargetDir": output_dir,
         "CustomName": wav_name,
-        "AudioCodec": "LinearPCM",
-        "AudioBitDepth": 16,
-        "AudioSampleRate": 16000,
-        "FormatWidth": 0,
-        "FormatHeight": 0,
     })
 
     job_id = project.AddRenderJob()
@@ -97,35 +120,91 @@ def render_audio(project, timeline, output_dir: str) -> str:
         log.error("Failed to add render job. Check Resolve render settings.")
         return None
 
-    project.StartRendering()
+    project.StartRendering([job_id])  # Only start OUR job, not all queued jobs
 
-    # Poll until done
-    while project.IsRenderingInProgress():
+    # Give Resolve a moment to transition from Ready to Rendering
+    time.sleep(2)
+
+    # Poll with timeout using actual job status
+    _timeout = 600  # 10 minutes
+    _start = time.time()
+    _ready_count = 0
+    while True:
+        try:
+            status = project.GetRenderJobStatus(job_id)
+            job_status = status.get("JobStatus", "")
+        except Exception:
+            job_status = ""
+
+        if job_status.lower() in ("complete", "completed"):
+            break
+        if job_status.lower() in ("failed", "cancelled", "canceled"):
+            log.error(f"Render failed with status: {job_status}")
+            try:
+                project.DeleteRenderJob(job_id)
+            except Exception:
+                pass
+            return None
+
+        if not project.IsRenderingInProgress() and job_status.lower() in ("ready", ""):
+            _ready_count += 1
+            if _ready_count >= 10:
+                log.error(f"Render never started (status: {job_status})")
+                try:
+                    project.DeleteRenderJob(job_id)
+                except Exception:
+                    pass
+                return None
+        else:
+            _ready_count = 0
+
+        if time.time() - _start > _timeout:
+            log.error("Render timed out after 10 minutes")
+            try:
+                project.DeleteRenderJob(job_id)
+            except Exception:
+                pass
+            return None
+
         time.sleep(0.5)
 
-    status = project.GetRenderJobStatus(job_id)
-    if status and status.get("JobStatus") == "Complete":
-        # Find the rendered file
-        target = status.get("TargetDir", output_dir)
-        rendered = os.path.join(target, f"{wav_name}.wav")
-        if os.path.exists(rendered):
-            size_mb = os.path.getsize(rendered) / (1024 * 1024)
-            log.info(f"Audio rendered: {rendered} ({size_mb:.1f} MB)")
-            return rendered
+    # Clean up render job from queue
+    try:
+        project.DeleteRenderJob(job_id)
+    except Exception:
+        pass
 
-    # Fallback: search output dir for the file
-    for f in os.listdir(output_dir):
-        if f.endswith(".wav") and safe_name in f:
-            found = os.path.join(output_dir, f)
-            log.info(f"Audio rendered: {found}")
-            return found
+    # Find rendered audio file (accept any format)
+    audio_path = None
+    try:
+        files = os.listdir(output_dir)
+        for ext in [".wav", ".mov", ".mp4", ".flac", ".mp3", ".aac", ".m4a", ".mxf"]:
+            for f in files:
+                if f.lower().endswith(ext):
+                    audio_path = os.path.join(output_dir, f)
+                    break
+            if audio_path:
+                break
+        if not audio_path and files:
+            audio_path = os.path.join(output_dir, files[0])
+    except Exception as e:
+        log.error(f"Error listing output dir: {e}")
 
-    log.error("Render completed but WAV file not found.")
+    if audio_path:
+        try:
+            size_mb = os.path.getsize(audio_path) / (1024 * 1024)
+            log.info(f"Audio rendered: {audio_path} ({size_mb:.1f} MB)")
+        except Exception:
+            log.info(f"Audio rendered: {audio_path}")
+        return audio_path
+
+    log.error("Render completed but audio file not found.")
     return None
 
 
 def run_resolve_mode(args):
     """Full pipeline: Resolve timeline -> audio -> transcribe -> SRT."""
+    import shutil
     from config import cfg
     from transcribe import Transcriber
     from srt import write_srt
@@ -133,6 +212,12 @@ def run_resolve_mode(args):
     # Apply CLI overrides
     if args.language:
         cfg["language"] = args.language
+    if args.max_words is not None:
+        cfg["max_words_per_caption"] = args.max_words
+    if args.max_chars is not None:
+        cfg["max_chars_per_line"] = args.max_chars
+    if args.max_lines is not None:
+        cfg["max_lines"] = args.max_lines
 
     resolve = get_resolve()
     if not resolve:
@@ -167,6 +252,18 @@ def run_resolve_mode(args):
         log.warning("No speech detected in timeline audio.")
         return 1
 
+    # Apply punctuation stripping if requested
+    if getattr(args, "strip_punctuation", False):
+        import re as _re
+        _punct = _re.compile(r'[^\w\s]', _re.UNICODE)
+        for seg in segments:
+            seg.text = _re.sub(r' +', ' ', _punct.sub('', seg.text)).strip()
+            for w in seg.words:
+                w.text = _punct.sub('', w.text).strip()
+            seg.words = [w for w in seg.words if w.text]
+        segments = [s for s in segments if s.words]
+        log.info("Punctuation stripped from captions")
+
     # Generate SRT
     output_dir = args.output_dir or cfg["output_dir"]
     if not output_dir:
@@ -184,10 +281,15 @@ def run_resolve_mode(args):
     if not success:
         return 1
 
+    # Switch back to Edit page (rendering puts us on Deliver)
+    try:
+        resolve.OpenPage("edit")
+    except Exception:
+        pass
+
     # Clean up temp audio
     try:
-        os.unlink(wav_path)
-        os.rmdir(tmp_dir)
+        shutil.rmtree(tmp_dir, ignore_errors=True)
     except Exception:
         pass
 
@@ -205,7 +307,7 @@ def run_file_mode(args):
     """Transcribe a file directly without Resolve."""
     from config import cfg
     from transcribe import Transcriber
-    from srt import write_srt
+    from srt import write_srt, write_captions_json
 
     if args.language:
         cfg["language"] = args.language
@@ -213,6 +315,8 @@ def run_file_mode(args):
         cfg["max_words_per_caption"] = args.max_words
     if args.max_chars is not None:
         cfg["max_chars_per_line"] = args.max_chars
+    if args.max_lines is not None:
+        cfg["max_lines"] = args.max_lines
 
     input_path = os.path.abspath(args.file)
     if not os.path.exists(input_path):
@@ -251,12 +355,29 @@ def run_file_mode(args):
         log.warning("No speech detected.")
         return 1
 
+    if getattr(args, "strip_punctuation", False):
+        import re as _re
+        _punct = _re.compile(r'[^\w\s]', _re.UNICODE)
+        for seg in segments:
+            seg.text = _re.sub(r' +', ' ', _punct.sub('', seg.text)).strip()
+            for w in seg.words:
+                w.text = _punct.sub('', w.text).strip()
+            # Filter out words that became empty after stripping
+            seg.words = [w for w in seg.words if w.text]
+        # Remove segments with no words left
+        segments = [s for s in segments if s.words]
+        log.info("Punctuation stripped from captions")
+
     # Determine FPS (default 24 for standalone files)
     fps = args.fps or 24.0
 
     success = write_srt(segments, srt_path, fps)
     if not success:
         return 1
+
+    # Write JSON sidecar for Text+ insertion mode
+    json_path = os.path.splitext(srt_path)[0] + ".json"
+    write_captions_json(segments, json_path, fps)
 
     log.info("")
     log.info(f"SRT saved to: {srt_path}")
@@ -320,6 +441,16 @@ Examples:
         "--max-chars",
         type=int,
         help="Max characters per line. Overrides config.",
+    )
+    parser.add_argument(
+        "--max-lines",
+        type=int,
+        help="Max lines per caption. Overrides config.",
+    )
+    parser.add_argument(
+        "--strip-punctuation",
+        action="store_true",
+        help="Remove all punctuation from captions.",
     )
 
     args = parser.parse_args()
