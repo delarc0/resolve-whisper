@@ -99,15 +99,28 @@ def words_to_captions(segments: list, fps: float = 24.0) -> list:
         else:
             pause = 0.0
 
-        # Natural break: big pause in speech (>0.5s) = always split
-        natural_break = block_words and pause > 0.5
+        # Tiered pause handling: a hard pause always breaks; a smaller pause
+        # only breaks once the caption has been on screen long enough that
+        # the viewer needs a refresh. This stops the chunker from greedily
+        # filling to max_words on every line.
+        if block_words:
+            block_dur_so_far = block_words[-1].end - block_words[0].start
+        else:
+            block_dur_so_far = 0.0
 
-        # Punctuation break: only trust it when there's also a pause (>0.2s)
-        # Whisper often puts periods where commas belong, so punctuation
-        # alone isn't reliable enough to split on
-        if block_words and pause > 0.2:
-            prev = block_words[-1].text
-            punct_break = prev.rstrip().endswith((".", "!", "?", ":", ";"))
+        # >0.18s pause = clear breath pause -> always break
+        hard_pause = block_words and pause > 0.18
+        # any micro-pause (>0.06s) breaks if caption has been up for ~0.6s+
+        micro_pause = block_words and pause > 0.06 and block_dur_so_far > 0.6
+        natural_break = hard_pause or micro_pause
+
+        # Sentence-ending punctuation always breaks (. ! ?). Soft punctuation
+        # (, ; :) still needs a >0.2s pause since Whisper puts those unreliably.
+        if block_words:
+            prev = block_words[-1].text.rstrip()
+            hard_punct = prev.endswith((".", "!", "?"))
+            soft_punct = prev.endswith((",", ";", ":")) and pause > 0.2
+            punct_break = hard_punct or soft_punct
         else:
             punct_break = False
 
@@ -156,7 +169,12 @@ def words_to_captions(segments: list, fps: float = 24.0) -> list:
     return captions
 
 
-def words_to_srt(segments: list, fps: float = 24.0) -> str:
+def strip_punct_text(text: str) -> str:
+    import re
+    return re.sub(r" +", " ", re.sub(r"[^\w\s]", "", text, flags=re.UNICODE)).strip()
+
+
+def words_to_srt(segments: list, fps: float = 24.0, strip_punctuation: bool = False) -> str:
     """Convert transcription segments into SRT subtitle format."""
     captions = words_to_captions(segments, fps)
     if not captions:
@@ -167,7 +185,8 @@ def words_to_srt(segments: list, fps: float = 24.0) -> str:
 
     srt_lines = []
     for i, cap in enumerate(captions, 1):
-        lines = _split_into_lines(cap["text"], max_chars)
+        text = strip_punct_text(cap["text"]) if strip_punctuation else cap["text"]
+        lines = _split_into_lines(text, max_chars)
         display = lines[:max_lines]
 
         srt_lines.append(str(i))
@@ -180,9 +199,9 @@ def words_to_srt(segments: list, fps: float = 24.0) -> str:
     return "\n".join(srt_lines)
 
 
-def write_srt(segments: list, output_path: str, fps: float = 24.0):
+def write_srt(segments: list, output_path: str, fps: float = 24.0, strip_punctuation: bool = False):
     """Generate SRT and write to file."""
-    content = words_to_srt(segments, fps)
+    content = words_to_srt(segments, fps, strip_punctuation=strip_punctuation)
     if not content:
         log.warning("No captions generated - empty transcription.")
         return False
@@ -198,12 +217,16 @@ def write_srt(segments: list, output_path: str, fps: float = 24.0):
     return True
 
 
-def write_captions_json(segments: list, output_path: str, fps: float = 24.0):
+def write_captions_json(segments: list, output_path: str, fps: float = 24.0, strip_punctuation: bool = False):
     """Generate structured caption data and write to JSON file."""
     captions = words_to_captions(segments, fps)
     if not captions:
         log.warning("No captions generated - empty transcription.")
         return False
+
+    if strip_punctuation:
+        for cap in captions:
+            cap["text"] = strip_punct_text(cap["text"])
 
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(captions, f, ensure_ascii=False)

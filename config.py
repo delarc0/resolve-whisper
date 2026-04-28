@@ -45,7 +45,7 @@ cfg = load_config()
 
 # Model constants
 if IS_MAC:
-    MODEL_SIZE = "mlx-community/whisper-large-v3-turbo"
+    MODEL_SIZE = "mlx-community/whisper-large-v3-mlx"
     DEVICE = "mlx"
     COMPUTE_TYPE = None
 else:

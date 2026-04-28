@@ -117,11 +117,15 @@ def _make_dialog(title, brand_label, brand_color, message, btn_text, btn_fg, btn
         wraplength=480, justify="left"
     ).pack(pady=(12, 20), anchor="w")
 
+    def _dismiss():
+        root.quit()
+        root.destroy()
+
     tk.Button(
         frame, text=btn_text, font=(_FONT_MONO, 10, "bold"),
         fg=btn_fg, bg=btn_bg, activebackground=btn_bg,
         relief="flat", padx=20, pady=4,
-        command=root.destroy
+        command=_dismiss
     ).pack(anchor="e")
 
     # Auto-size: let tkinter measure content, then center on screen
@@ -173,7 +177,7 @@ def show_progress(title, message):
         root.attributes("-topmost", True)
 
         root.update_idletasks()
-        w, h = 500, 170
+        w, h = 500, 190
         x = (root.winfo_screenwidth() - w) // 2
         y = (root.winfo_screenheight() - h) // 2
         root.geometry(f"{w}x{h}+{x}+{y}")
@@ -185,13 +189,19 @@ def show_progress(title, message):
             frame, text=_BRAND, font=(_FONT_MONO, 9), fg=_GREEN, bg=_DARK
         ).pack(anchor="w")
 
+        # Phase indicator (e.g. "Step 1 of 3")
+        phase_label = tk.Label(
+            frame, text="", font=(_FONT_MONO, 8), fg="#555555", bg=_DARK
+        )
+        phase_label.pack(anchor="w", pady=(8, 0))
+
         label = tk.Label(
             frame, text=message, font=(_FONT_UI, 10), fg="#FFFFFF", bg=_DARK,
             wraplength=460, justify="left"
         )
-        label.pack(pady=(12, 8), anchor="w")
+        label.pack(pady=(2, 8), anchor="w")
 
-        # Progress bar (green fill on dark track)
+        # Progress bar
         bar_track = tk.Frame(frame, bg="#1A1C1E", height=8)
         bar_track.pack(fill="x", pady=(0, 8))
         bar_track.pack_propagate(False)
@@ -199,10 +209,35 @@ def show_progress(title, message):
         bar_fill = tk.Frame(bar_track, bg=_GREEN, height=8, width=0)
         bar_fill.place(x=0, y=0, relheight=1.0, width=0)
 
+        # Bottom row: percentage left, elapsed right
+        bottom_row = tk.Frame(frame, bg=_DARK)
+        bottom_row.pack(fill="x")
+
         pct_label = tk.Label(
-            frame, text="", font=(_FONT_MONO, 9), fg="#888888", bg=_DARK
+            bottom_row, text="", font=(_FONT_MONO, 9), fg="#888888", bg=_DARK
         )
-        pct_label.pack(anchor="w")
+        pct_label.pack(side="left")
+
+        elapsed_label = tk.Label(
+            bottom_row, text="", font=(_FONT_MONO, 9), fg="#555555", bg=_DARK
+        )
+        elapsed_label.pack(side="right")
+
+        # Elapsed time ticker
+        _elapsed = [0]
+        _timer_id = [None]
+
+        def _tick():
+            _elapsed[0] += 1
+            mins = _elapsed[0] // 60
+            secs = _elapsed[0] % 60
+            try:
+                elapsed_label.config(text=f"{mins}:{secs:02d}")
+            except Exception:
+                return
+            _timer_id[0] = root.after(1000, _tick)
+
+        _timer_id[0] = root.after(1000, _tick)
 
         def update_text(new_message):
             _log(f"progress update: {new_message}")
@@ -222,8 +257,21 @@ def show_progress(title, message):
             except Exception:
                 pass
 
+        def update_phase(step, total, name):
+            try:
+                phase_label.config(text=f"Step {step} of {total}")
+                label.config(text=name)
+                bar_fill.place(x=0, y=0, relheight=1.0, width=0)
+                pct_label.config(text="")
+                root.update()
+            except Exception:
+                pass
+
         def close():
             try:
+                if _timer_id[0]:
+                    root.after_cancel(_timer_id[0])
+                root.quit()
                 root.destroy()
             except Exception:
                 pass
@@ -232,12 +280,12 @@ def show_progress(title, message):
         root.update()
         _log("Progress window created OK")
 
-        return close, update_text, update_bar, root
+        return close, update_text, update_bar, update_phase, root
 
     except Exception as e:
         _log(f"show_progress failed: {e}")
         print(f"{title}: {message}")
-        return (lambda: None), (lambda m: print(m)), (lambda p: None), None
+        return (lambda: None), (lambda m: print(m)), (lambda p: None), (lambda s, t, n: None), None
 
 
 def open_file_selected(file_path):
@@ -266,7 +314,7 @@ _PRESETS = {
 _PRESET_NAMES = list(_PRESETS.keys())
 
 
-def show_settings():
+def show_settings(timeline_name="", duration_s=0.0, fps=24.0):
     """Show settings dialog before transcription. Returns dict or None if cancelled."""
     _log("Showing settings dialog")
     try:
@@ -290,7 +338,17 @@ def show_settings():
         tk.Label(
             frame, text="Caption Settings", font=(_FONT_UI, 12, "bold"),
             fg="#FFFFFF", bg=_DARK
-        ).pack(pady=(8, 16), anchor="w")
+        ).pack(pady=(8, 4), anchor="w")
+
+        # --- Timeline context ---
+        if timeline_name:
+            mins = int(duration_s) // 60
+            secs = int(duration_s) % 60
+            ctx = f"{timeline_name}  //  {mins}m {secs}s  //  {fps:.0f} fps"
+            tk.Label(
+                frame, text=ctx, font=(_FONT_MONO, 8),
+                fg="#666666", bg=_DARK
+            ).pack(anchor="w", pady=(0, 12))
 
         _menu_cfg = dict(
             font=(_FONT_MONO, 10), fg="#FFFFFF", bg="#1A1C1E",
@@ -303,7 +361,7 @@ def show_settings():
 
         # --- Preset selector ---
         row_preset = tk.Frame(frame, bg=_DARK)
-        row_preset.pack(fill="x", pady=(0, 14))
+        row_preset.pack(fill="x", pady=(0, 10))
 
         tk.Label(
             row_preset, text="Preset:", font=(_FONT_UI, 10),
@@ -315,6 +373,22 @@ def show_settings():
         preset_menu.config(width=14, **_menu_cfg)
         preset_menu["menu"].config(**_dropdown_cfg)
         preset_menu.pack(side="left")
+
+        # --- Output mode ---
+        row_output = tk.Frame(frame, bg=_DARK)
+        row_output.pack(fill="x", pady=(0, 10))
+
+        tk.Label(
+            row_output, text="Output:", font=(_FONT_UI, 10),
+            fg="#CCCCCC", bg=_DARK, width=20, anchor="w"
+        ).pack(side="left")
+
+        _OUTPUT_MODES = ["Text+ (native)", "SRT file"]
+        output_var = tk.StringVar(value=_OUTPUT_MODES[0])
+        output_menu = tk.OptionMenu(row_output, output_var, *_OUTPUT_MODES)
+        output_menu.config(width=14, **_menu_cfg)
+        output_menu["menu"].config(**_dropdown_cfg)
+        output_menu.pack(side="left")
 
         # --- Language selector ---
         row_lang = tk.Frame(frame, bg=_DARK)
@@ -369,7 +443,7 @@ def show_settings():
 
         # --- Max lines per caption ---
         row3 = tk.Frame(frame, bg=_DARK)
-        row3.pack(fill="x", pady=(0, 20))
+        row3.pack(fill="x", pady=(0, 10))
 
         tk.Label(
             row3, text="Lines per caption:", font=(_FONT_UI, 10),
@@ -385,7 +459,7 @@ def show_settings():
 
         # --- Remove punctuation ---
         row_punct = tk.Frame(frame, bg=_DARK)
-        row_punct.pack(fill="x", pady=(0, 14))
+        row_punct.pack(fill="x", pady=(0, 20))
 
         strip_punct_var = tk.BooleanVar(value=False)
         tk.Checkbutton(
@@ -395,25 +469,6 @@ def show_settings():
             highlightthickness=0, variable=strip_punct_var,
         ).pack(anchor="w")
 
-        # --- Separator ---
-        tk.Frame(frame, bg="#333333", height=1).pack(fill="x", pady=(0, 14))
-
-        # --- Output mode ---
-        row_output = tk.Frame(frame, bg=_DARK)
-        row_output.pack(fill="x", pady=(0, 20))
-
-        tk.Label(
-            row_output, text="Output:", font=(_FONT_UI, 10),
-            fg="#CCCCCC", bg=_DARK, width=20, anchor="w"
-        ).pack(side="left")
-
-        _OUTPUT_MODES = ["Text+ (native)", "SRT file"]
-        output_var = tk.StringVar(value=_OUTPUT_MODES[0])
-        output_menu = tk.OptionMenu(row_output, output_var, *_OUTPUT_MODES)
-        output_menu.config(width=14, **_menu_cfg)
-        output_menu["menu"].config(**_dropdown_cfg)
-        output_menu.pack(side="left")
-
         # --- Preset auto-fill logic ---
         _detail_menus = [words_menu, chars_menu, lines_menu]
 
@@ -421,19 +476,25 @@ def show_settings():
             name = preset_var.get()
             vals = _PRESETS.get(name)
             if vals:
-                # Apply preset values
                 words_var.set("Auto" if vals["max_words"] == 0 else str(vals["max_words"]))
                 chars_var.set(str(vals["max_chars"]))
                 lines_var.set(str(vals["max_lines"]))
                 for m in _detail_menus:
                     m.config(state="disabled")
             else:
-                # Custom - enable all controls
                 for m in _detail_menus:
                     m.config(state="normal")
 
         preset_var.trace_add("write", _apply_preset)
-        _apply_preset()  # apply default preset on open
+        _apply_preset()
+
+        # --- Dynamic button label ---
+        start_btn = None
+
+        def _update_btn_label(*_args):
+            if start_btn:
+                lbl = "Generate Captions" if output_var.get().startswith("Text+") else "Export SRT"
+                start_btn.config(text=lbl)
 
         # --- Buttons ---
         btn_row = tk.Frame(frame, bg=_DARK)
@@ -441,6 +502,7 @@ def show_settings():
 
         def on_cancel():
             result[0] = None
+            root.quit()
             root.destroy()
 
         def on_start():
@@ -453,6 +515,7 @@ def show_settings():
                 "strip_punctuation": strip_punct_var.get(),
                 "output_mode": "textplus" if output_var.get().startswith("Text+") else "srt",
             }
+            root.quit()
             root.destroy()
 
         tk.Button(
@@ -462,12 +525,14 @@ def show_settings():
             command=on_cancel
         ).pack(side="left")
 
-        tk.Button(
+        start_btn = tk.Button(
             btn_row, text="Generate Captions", font=(_FONT_MONO, 10, "bold"),
             fg=_DARK, bg=_GREEN, activebackground="#35D07A",
             relief="flat", padx=16, pady=4,
             command=on_start
-        ).pack(side="right")
+        )
+        start_btn.pack(side="right")
+        output_var.trace_add("write", _update_btn_label)
 
         # Center on screen
         root.update_idletasks()
@@ -491,7 +556,7 @@ def show_settings():
         return {"max_words": 0, "max_chars": 42, "max_lines": 1, "language": "sv", "strip_punctuation": False, "output_mode": "textplus"}
 
 
-def _import_srt(project, timeline, srt_path):
+def _import_srt(_project, timeline, srt_path):
     """Try to import SRT onto subtitle track. Returns True if successful."""
 
     # Resolve's scripting API (through v20.2) has no method to import
@@ -527,49 +592,30 @@ def _import_srt(project, timeline, srt_path):
 
 _TEMPLATE_NAME = "_WhisperTemplate"
 
-# Minimal Fusion .comp file: TextPlus node with default caption styling
-_COMP_TEMPLATE = """\
-Composition {
-    CurrentTime = 0,
-    RenderRange = { 0, 23 },
-    GlobalRange = { 0, 23 },
-    CurrentID = 3,
-    HiQ = true,
-    PlaybackUpdateMode = 0,
-    Version = "Fusion Studio 18.0",
-    Tools = ordered() {
-        TextPlus1 = TextPlus {
-            NameSet = true,
-            Inputs = {
-                Width = Input { Value = 1920, },
-                Height = Input { Value = 1080, },
-                UseFrameFormatSettings = Input { Value = 1, },
-                StyledText = Input { Value = "", },
-                Font = Input { Value = "Open Sans", },
-                Style = Input { Value = "Bold", },
-                Size = Input { Value = 0.042, },
-                Center = Input { Value = { 0.5, 0.08 }, },
-                Red1 = Input { Value = 1, },
-                Green1 = Input { Value = 1, },
-                Blue1 = Input { Value = 1, },
-                Enabled2 = Input { Value = 1, },
-                Red2 = Input { Value = 0, },
-                Green2 = Input { Value = 0, },
-                Blue2 = Input { Value = 0, },
-                Thickness2 = Input { Value = 0.15, },
-            },
-        },
-        MediaOut1 = MediaOut {
-            Inputs = {
-                Input = Input {
-                    SourceOp = "TextPlus1",
-                    Source = "Output",
-                },
-            },
-        },
-    },
-}
-"""
+
+def _create_transparent_png(path, width=1920, height=1080):
+    """Create a transparent PNG at the given resolution (no PIL needed)."""
+    import struct
+    import zlib
+
+    header = b'\x89PNG\r\n\x1a\n'
+
+    ihdr_data = struct.pack('>IIBBBBB', width, height, 8, 6, 0, 0, 0)
+    ihdr_crc = zlib.crc32(b'IHDR' + ihdr_data) & 0xFFFFFFFF
+    ihdr = struct.pack('>I', 13) + b'IHDR' + ihdr_data + struct.pack('>I', ihdr_crc)
+
+    # All-transparent RGBA: filter byte 0 + (width * 4 zero bytes) per row
+    row = b'\x00' + b'\x00' * (width * 4)
+    raw = row * height
+    compressed = zlib.compress(raw)
+    idat_crc = zlib.crc32(b'IDAT' + compressed) & 0xFFFFFFFF
+    idat = struct.pack('>I', len(compressed)) + b'IDAT' + compressed + struct.pack('>I', idat_crc)
+
+    iend_crc = zlib.crc32(b'IEND') & 0xFFFFFFFF
+    iend = struct.pack('>I', 0) + b'IEND' + struct.pack('>I', iend_crc)
+
+    with open(path, 'wb') as f:
+        f.write(header + ihdr + idat + iend)
 
 
 def _find_clip_in_pool(folder, name):
@@ -591,8 +637,8 @@ def _find_clip_in_pool(folder, name):
     return None
 
 
-def _get_or_create_template(media_pool):
-    """Find or create the Text+ caption template in the media pool."""
+def _get_or_create_template(media_pool, width=1920, height=1080):
+    """Find or create the caption template in the media pool."""
     _log("Looking for caption template in media pool...")
 
     root_folder = media_pool.GetRootFolder()
@@ -600,50 +646,44 @@ def _get_or_create_template(media_pool):
         _log("Could not access media pool root folder")
         return None
 
-    # Check if template already exists
+    png_path = os.path.join(APP_DIR, f"{_TEMPLATE_NAME}.png")
+
+    # Always (re)create PNG at current timeline resolution
+    _create_transparent_png(png_path, width, height)
+    _log(f"Template PNG ready: {png_path} ({width}x{height})")
+
+    # Delete any existing template so we reimport at the correct resolution
+    # (Resolve caches media properties -- overwriting the file isn't enough)
     template = _find_clip_in_pool(root_folder, _TEMPLATE_NAME)
     if template:
-        _log(f"Found existing template: {_TEMPLATE_NAME}")
-        return template
+        try:
+            media_pool.DeleteClips([template])
+            _log("Deleted old template from media pool")
+        except Exception as e:
+            _log(f"Could not delete old template: {e}")
 
-    # Try to create one by importing a .comp file
-    _log("Template not found, attempting to create...")
+    # Import the fresh PNG as our template
+    _log("Importing template...")
     try:
-        comp_dir = tempfile.mkdtemp(prefix="whisper_template_")
-        comp_path = os.path.join(comp_dir, f"{_TEMPLATE_NAME}.comp")
 
-        with open(comp_path, "w", encoding="utf-8") as f:
-            f.write(_COMP_TEMPLATE)
-
-        _log(f"Wrote template comp: {comp_path}")
-
-        # Save current folder, switch to root for import
         prev_folder = media_pool.GetCurrentFolder()
         media_pool.SetCurrentFolder(root_folder)
 
-        imported = media_pool.ImportMedia([comp_path])
+        imported = media_pool.ImportMedia([png_path])
         _log(f"ImportMedia result: {imported}")
 
         if imported and len(imported) > 0:
-            # Rename to our template name
             try:
                 imported[0].SetClipProperty("Clip Name", _TEMPLATE_NAME)
             except Exception:
                 pass
-            _log(f"Template created successfully")
+            _log("Template created successfully")
             template = imported[0]
         else:
-            _log("ImportMedia returned empty - .comp import not supported in this Resolve version")
+            _log("ImportMedia returned empty")
 
-        # Restore previous folder
         if prev_folder:
             media_pool.SetCurrentFolder(prev_folder)
-
-        # Clean up temp file
-        try:
-            shutil.rmtree(comp_dir, ignore_errors=True)
-        except Exception:
-            pass
 
         return template
 
@@ -652,20 +692,23 @@ def _get_or_create_template(media_pool):
         return None
 
 
-def _insert_textplus_captions(media_pool, timeline, captions, fps, template):
-    """Insert Text+ clips for each caption using AppendToTimeline."""
+def _insert_textplus_captions(media_pool, timeline, captions, fps, template, on_progress=None):
+    """Insert clips and add Text+ nodes via Fusion scripting."""
     _log(f"Inserting {len(captions)} Text+ captions...")
 
-    # Add a new video track for captions
+    # Add a new video track -- validate it actually worked
+    prev_track_count = timeline.GetTrackCount("video")
     try:
         timeline.AddTrack("video")
     except Exception as e:
         _log(f"AddTrack failed: {e}")
 
     track_index = timeline.GetTrackCount("video")
-    _log(f"Caption track index: {track_index}")
+    if track_index <= prev_track_count:
+        _log(f"ERROR: Failed to create caption track (count stayed at {track_index})")
+        return False
+    _log(f"Caption track index: {track_index} (was {prev_track_count})")
 
-    # Get timeline start frame offset
     tl_start = timeline.GetStartFrame() or 0
 
     # Build clipInfo list for batch insertion
@@ -680,10 +723,10 @@ def _insert_textplus_captions(media_pool, timeline, captions, fps, template):
             "endFrame": duration_frames,
             "trackIndex": track_index,
             "recordFrame": start_frame,
-            "mediaType": 1,  # video only
+            "mediaType": 1,
         })
 
-    # Try batch insert first
+    # Batch insert
     items = None
     try:
         items = media_pool.AppendToTimeline(clip_infos)
@@ -691,7 +734,7 @@ def _insert_textplus_captions(media_pool, timeline, captions, fps, template):
     except Exception as e:
         _log(f"Batch AppendToTimeline failed: {e}")
 
-    # Fallback: insert one by one
+    # Fallback: one by one
     if not items:
         _log("Falling back to one-by-one insertion...")
         items = []
@@ -702,48 +745,113 @@ def _insert_textplus_captions(media_pool, timeline, captions, fps, template):
                     items.extend(result)
             except Exception as e:
                 _log(f"Single AppendToTimeline failed: {e}")
-                continue
 
     if not items:
         _log("No items were inserted")
         return False
 
-    _log(f"Inserted {len(items)} clips, setting text...")
+    _log(f"Inserted {len(items)} clips, adding Text+ via Fusion...")
 
-    # Set text content on each clip via Fusion comp
+    # Let Resolve finish processing the batch insert
+    time.sleep(0.5)
+
+    # Get fresh item references from the timeline track
+    # (AppendToTimeline references can be stale for Fusion operations)
+    track_items = timeline.GetItemListInTrack("video", track_index)
+    if track_items and len(track_items) > 0:
+        _log(f"Refreshed: {len(track_items)} items on track {track_index}")
+        items = track_items
+
+    # Add TextPlus node to each clip's Fusion comp and set caption text
     success_count = 0
+    total = len(items)
     for i, item in enumerate(items):
         if i >= len(captions):
             break
         cap_text = captions[i]["text"]
+
+        if on_progress:
+            try:
+                on_progress(int((i + 1) / total * 100))
+            except Exception:
+                pass
+
         try:
             comp = item.GetFusionCompByIndex(1)
+
+            # PNG clips don't have Fusion comps by default -- create one
+            if not comp:
+                try:
+                    comp = item.AddFusionComp()
+                    if comp:
+                        _log(f"  Caption {i+1}: created Fusion comp")
+                    else:
+                        _log(f"  Caption {i+1}: AddFusionComp returned None")
+                except Exception as e:
+                    _log(f"  Caption {i+1}: AddFusionComp error: {e}")
+
             if not comp:
                 _log(f"  Caption {i+1}: no Fusion comp")
+                # Log diagnostic on first failure to help debug
+                if success_count == 0 and i < 3:
+                    _log("  (If all clips fail here, AddFusionComp may not be "
+                         "supported in this Resolve version)")
                 continue
 
-            # Find TextPlus tool and set text
-            tools = comp.GetToolList(False, "TextPlus")
-            if tools:
-                for tool in tools.values():
+            # Diagnostic logging for first clip
+            if i == 0:
+                try:
+                    tools = comp.GetToolList()
+                    tool_names = [str(t.Name) for t in tools.values()] if tools else []
+                    _log(f"  First clip comp tools: {tool_names}")
+                except Exception:
+                    pass
+
+            # Check if TextPlus already exists (user-provided template)
+            existing = comp.GetToolList(False, "TextPlus")
+            if existing:
+                for tool in existing.values():
                     tool.SetInput("StyledText", cap_text)
                     success_count += 1
                     break
-            else:
-                # Fallback: try all tools
-                all_tools = comp.GetToolList(False)
-                for tool in (all_tools or {}).values():
-                    try:
-                        if hasattr(tool, "ID") and tool.ID == "TextPlus":
-                            tool.SetInput("StyledText", cap_text)
-                            success_count += 1
-                            break
-                    except Exception:
-                        pass
-        except Exception as e:
-            _log(f"  Caption {i+1} text set failed: {e}")
+                continue
 
-    _log(f"Text set on {success_count}/{len(items)} clips")
+            # Add TextPlus node and wire it to MediaOut
+            comp.Lock()
+            try:
+                tp = comp.AddTool("TextPlus", -32768, -32768)
+                if tp:
+                    tp.SetInput("StyledText", cap_text)
+                    tp.SetInput("Font", "Open Sans")
+                    tp.SetInput("Style", "Bold")
+                    tp.SetInput("Size", 0.042)
+                    tp.SetInput("Center", {1: 0.5, 2: 0.08})
+                    tp.SetInput("Red1", 1.0)
+                    tp.SetInput("Green1", 1.0)
+                    tp.SetInput("Blue1", 1.0)
+                    tp.SetInput("Enabled2", 1)
+                    tp.SetInput("Red2", 0.0)
+                    tp.SetInput("Green2", 0.0)
+                    tp.SetInput("Blue2", 0.0)
+                    tp.SetInput("Thickness2", 0.15)
+
+                    # Connect TextPlus output to MediaOut
+                    # (this disconnects MediaIn -- TextPlus is now the sole output)
+                    media_out = comp.FindTool("MediaOut1")
+                    if media_out:
+                        media_out.FindMainInput(1).ConnectTo(tp.FindMainOutput(1))
+                        success_count += 1
+                    else:
+                        _log(f"  Caption {i+1}: no MediaOut1 in comp (TextPlus won't render)")
+                else:
+                    _log(f"  Caption {i+1}: AddTool returned None")
+            finally:
+                comp.Unlock()
+
+        except Exception as e:
+            _log(f"  Caption {i+1} failed: {e}")
+
+    _log(f"Text+ set on {success_count}/{len(items)} clips")
 
     # Rename the track
     try:
@@ -752,6 +860,78 @@ def _insert_textplus_captions(media_pool, timeline, captions, fps, template):
         pass
 
     return success_count > 0
+
+
+def _run_caption_subprocess(cmd, update_bar, progress_root):
+    """Run caption.py subprocess. Returns (returncode, stderr_text)."""
+    _log(f"Running: {' '.join(cmd)}")
+
+    popen_kwargs = dict(
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        cwd=APP_DIR,
+    )
+    if IS_WIN:
+        popen_kwargs["creationflags"] = 0x08000000  # CREATE_NO_WINDOW
+
+    proc = subprocess.Popen(cmd, **popen_kwargs)
+    try:
+        # Drain stderr in a background thread to prevent pipe deadlock
+        stderr_lines = []
+        def _drain_stderr():
+            try:
+                for line in proc.stderr:
+                    stderr_lines.append(line)
+            except Exception:
+                pass
+        stderr_thread = threading.Thread(target=_drain_stderr, daemon=True)
+        stderr_thread.start()
+
+        # Read stdout for PROGRESS:XX lines, keep UI responsive
+        while True:
+            line = proc.stdout.readline()
+            if not line and proc.poll() is not None:
+                break
+            if line:
+                line = line.strip()
+                if line.startswith("PROGRESS:"):
+                    try:
+                        pct = int(line.split(":")[1])
+                        update_bar(pct)
+                    except (ValueError, IndexError):
+                        pass
+                else:
+                    _log(f"stdout: {line}")
+
+            # Keep tkinter responsive
+            if progress_root:
+                try:
+                    progress_root.update()
+                except Exception:
+                    pass
+
+        stderr_thread.join(timeout=5.0)
+
+        try:
+            returncode = proc.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            _log("Caption subprocess timed out, killing it")
+            proc.kill()
+            proc.wait(timeout=5)
+            returncode = -1
+
+        stderr_text = "".join(stderr_lines)
+        return returncode, stderr_text
+
+    except Exception:
+        # Clean up process on any unexpected error
+        try:
+            proc.kill()
+            proc.wait(timeout=5)
+        except Exception:
+            pass
+        raise
 
 
 # --- Main ---
@@ -872,7 +1052,7 @@ def main():
         duration_s = 0
 
     # Show settings dialog
-    settings = show_settings()
+    settings = show_settings(timeline_name, duration_s, fps)
     if settings is None:
         _log("User cancelled settings dialog")
         return
@@ -888,17 +1068,17 @@ def main():
     # Initialize cleanup vars before try block so they're always bound
     tmp_dir = None
     job_id = None
-    proc = None
     close_progress = lambda: None
-    update_status = lambda m: None
     update_bar = lambda p: None
+    update_phase = lambda s, t, n: None
     progress_root = None
 
     # Show progress
-    close_progress, update_status, update_bar, progress_root = show_progress(
+    close_progress, _update_text, update_bar, update_phase, progress_root = show_progress(
         _TITLE,
         f"Rendering audio from '{timeline_name}'"
     )
+    update_phase(1, 3, "Rendering audio")
 
     try:
         # Render audio for current in/out range
@@ -941,7 +1121,7 @@ def main():
 
         project.SetRenderSettings({
             "ExportAudio": True,
-            "ExportVideo": False,
+            "ExportVideo": True,
             "TargetDir": tmp_dir,
             "CustomName": wav_name,
         })
@@ -973,7 +1153,7 @@ def main():
                 job_status = status.get("JobStatus", "")
                 pct = status.get("CompletionPercentage", 0)
                 if pct and progress_root:
-                    update_bar(int(pct * 0.3))
+                    update_bar(int(pct))
             except Exception:
                 job_status = ""
 
@@ -985,8 +1165,7 @@ def main():
                 close_progress()
                 show_error(
                     _TITLE,
-                    f"Audio render failed ({job_status}).\n\n"
-                    "Make sure your timeline has audio tracks."
+                    f"Audio render failed ({job_status}).\n\nMake sure your timeline has audio."
                 )
                 return
 
@@ -999,8 +1178,7 @@ def main():
                     close_progress()
                     show_error(
                         _TITLE,
-                        "Render job was created but never started.\n\n"
-                        "Try rendering manually first (Deliver page) to check settings."
+                        "Render never started.\n\nTry a manual render on the Deliver page first."
                     )
                     return
             else:
@@ -1061,8 +1239,7 @@ def main():
             close_progress()
             show_error(
                 _TITLE,
-                "Audio render finished but no file was created.\n\n"
-                "Check the debug log on your Desktop for details."
+                "Audio render finished but no file was created."
             )
             return
 
@@ -1072,7 +1249,7 @@ def main():
             _log(f"Audio file: {audio_path}")
 
         # Transcribe
-        update_status("Transcribing with AI (this may take a moment)")
+        update_phase(2, 3, "Transcribing audio")
 
         output_dir = os.path.join(os.path.expanduser("~"), "Desktop", "Captions")
         os.makedirs(output_dir, exist_ok=True)
@@ -1093,82 +1270,53 @@ def main():
         if strip_punctuation:
             cmd.append("--strip-punctuation")
 
-        _log(f"Running: {' '.join(cmd)}")
-
-        # Subprocess with CREATE_NO_WINDOW on Windows to avoid console flash.
-        # Pipe stdout for progress, pipe stderr to a drain thread to prevent
-        # deadlock (Windows pipe buffer is 4KB - if stderr fills while we
-        # block on stdout.readline, both processes deadlock).
-        popen_kwargs = dict(
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            cwd=APP_DIR,
+        returncode, stderr_text = _run_caption_subprocess(
+            cmd, update_bar, progress_root
         )
-        if IS_WIN:
-            popen_kwargs["creationflags"] = 0x08000000  # CREATE_NO_WINDOW
-
-        proc = subprocess.Popen(cmd, **popen_kwargs)
-
-        # Drain stderr in a background thread to prevent pipe deadlock
-        stderr_lines = []
-        def _drain_stderr():
-            try:
-                for line in proc.stderr:
-                    stderr_lines.append(line)
-            except Exception:
-                pass
-        stderr_thread = threading.Thread(target=_drain_stderr, daemon=True)
-        stderr_thread.start()
-
-        # Read stdout for PROGRESS:XX lines, keep UI responsive
-        while True:
-            line = proc.stdout.readline()
-            if not line and proc.poll() is not None:
-                break
-            if line:
-                line = line.strip()
-                if line.startswith("PROGRESS:"):
-                    try:
-                        pct = int(line.split(":")[1])
-                        update_bar(pct)
-                        update_status(f"Transcribing... {pct}%")
-                    except (ValueError, IndexError):
-                        pass
-                else:
-                    _log(f"stdout: {line}")
-
-            # Keep tkinter responsive
-            if progress_root:
-                try:
-                    progress_root.update()
-                except Exception:
-                    pass
-
-        # Wait for stderr thread to finish (with timeout to avoid hanging)
-        stderr_thread.join(timeout=5.0)
-
-        try:
-            returncode = proc.wait(timeout=30)
-        except subprocess.TimeoutExpired:
-            _log("Caption subprocess timed out, killing it")
-            proc.kill()
-            proc.wait(timeout=5)
-            returncode = -1
-        proc = None  # Mark as cleaned up
-        stderr_text = "".join(stderr_lines)
 
         _log(f"Return code: {returncode}")
         if stderr_text:
-            _log(f"stderr: {stderr_text[-500:]}")
+            _log(f"stderr: ...\n{stderr_text[-2000:]}")
+
+        # Auto-retry on CUDA crash: if the process died with no Python-level
+        # error output (only [INFO] lines), it's likely a GPU crash.
+        # Retry once on CPU which is slower but reliable.
+        if returncode != 0:
+            _has_python_error = any(
+                not ("[INFO]" in l or l.strip().startswith("PROGRESS:") or not l.strip())
+                for l in stderr_text.split("\n")
+            )
+            if not _has_python_error:
+                _log("No error trace in stderr -- possible GPU crash. Retrying on CPU...")
+                update_phase(2, 3, "Retrying transcription (CPU)")
+                update_bar(0)
+                retry_cmd = cmd + ["--device", "cpu"]
+                returncode, stderr_text = _run_caption_subprocess(
+                    retry_cmd, update_bar, progress_root
+                )
+                _log(f"Retry return code: {returncode}")
+                if stderr_text:
+                    _log(f"Retry stderr: ...\n{stderr_text[-2000:]}")
 
         if returncode != 0:
             close_progress()
-            error_msg = stderr_text.strip().split("\n")[-1] if stderr_text else "Unknown error"
-            show_error(
-                _TITLE,
-                f"{error_msg}\n\nCheck that setup completed successfully."
-            )
+            # Find the actual error line (skip INFO/PROGRESS lines)
+            error_msg = None
+            if stderr_text:
+                for line in reversed(stderr_text.strip().split("\n")):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    if "[INFO]" in line or line.startswith("PROGRESS:"):
+                        continue
+                    error_msg = line
+                    # Strip timestamp prefix like "11:44:07 [ERROR] ..."
+                    if "] " in error_msg:
+                        error_msg = error_msg.split("] ", 1)[-1]
+                    break
+            if not error_msg:
+                error_msg = "Transcription failed.\nCheck the debug log on your Desktop."
+            show_error(_TITLE, error_msg)
             return
 
         if not os.path.exists(srt_path):
@@ -1185,7 +1333,7 @@ def main():
 
         # Insert captions based on output mode
         if output_mode == "textplus":
-            update_status("Inserting Text+ captions into timeline")
+            update_phase(3, 3, "Inserting captions into timeline")
 
             # Read JSON sidecar with structured caption data
             import json as _json
@@ -1204,10 +1352,13 @@ def main():
             if captions_data:
                 media_pool = project.GetMediaPool()
                 if media_pool:
-                    template = _get_or_create_template(media_pool)
+                    tl_width = int(timeline.GetSetting("timelineResolutionWidth") or 1920)
+                    tl_height = int(timeline.GetSetting("timelineResolutionHeight") or 1080)
+                    template = _get_or_create_template(media_pool, tl_width, tl_height)
                     if template:
                         textplus_ok = _insert_textplus_captions(
-                            media_pool, timeline, captions_data, fps, template
+                            media_pool, timeline, captions_data, fps, template,
+                            on_progress=update_bar,
                         )
                     else:
                         _log("Could not get/create template")
@@ -1219,28 +1370,22 @@ def main():
             if textplus_ok:
                 show_message(
                     _TITLE,
-                    f"Done! {caption_count} captions added as Text+ to '{timeline_name}'.\n\n"
-                    f"Style tip: Edit the '{_TEMPLATE_NAME}' clip in your\n"
-                    f"Media Pool to change font/color for future runs.\n\n"
-                    f"SRT backup saved to:\n{srt_path}"
+                    f"{caption_count} captions added to '{timeline_name}'\n\n"
+                    f"SRT backup: {srt_path}"
                 )
             else:
-                # Text+ failed, fall back to SRT file mode
                 _log("Text+ insertion failed, falling back to SRT mode")
                 open_file_selected(srt_path)
                 show_message(
                     _TITLE,
-                    f"Done! {caption_count} captions for '{timeline_name}'.\n\n"
-                    f"Text+ insertion was not available.\n"
-                    f"To use native captions: create a Text+ clip, style it,\n"
-                    f"drag to Media Pool, rename to '{_TEMPLATE_NAME}'.\n\n"
-                    f"For now, import manually:\n"
+                    f"{caption_count} captions exported\n\n"
+                    f"Text+ insertion failed. Import manually:\n"
                     f"File > Import > Subtitle\n\n"
                     f"{srt_path}"
                 )
         else:
             # SRT file mode
-            update_status("Importing captions into timeline")
+            update_phase(3, 3, "Importing captions")
             imported = _import_srt(project, timeline, srt_path)
 
             close_progress()
@@ -1248,17 +1393,15 @@ def main():
             if imported:
                 show_message(
                     _TITLE,
-                    f"Done! {caption_count} captions added to '{timeline_name}'.\n\n"
-                    f"SRT also saved to:\n{srt_path}"
+                    f"{caption_count} captions added to '{timeline_name}'\n\n"
+                    f"SRT: {srt_path}"
                 )
             else:
                 open_file_selected(srt_path)
                 show_message(
                     _TITLE,
-                    f"Done! {caption_count} captions for '{timeline_name}'.\n\n"
-                    f"To import into your timeline:\n"
-                    f"File > Import > Subtitle\n"
-                    f"(the file is highlighted in the Explorer window)\n\n"
+                    f"{caption_count} captions exported\n\n"
+                    f"Import: File > Import > Subtitle\n\n"
                     f"{srt_path}"
                 )
 
@@ -1268,14 +1411,7 @@ def main():
         show_error(_TITLE, f"Unexpected error:\n{e}")
 
     finally:
-        # Kill subprocess if still running (prevents zombie holding GPU VRAM)
-        if proc is not None:
-            try:
-                proc.kill()
-                proc.wait(timeout=5)
-                _log("Killed orphaned caption subprocess")
-            except Exception:
-                pass
+        # Subprocess cleanup is handled inside _run_caption_subprocess()
 
         # Clean up orphaned render job from Resolve's queue
         if job_id is not None:
@@ -1293,6 +1429,25 @@ def main():
             except Exception:
                 pass
 
+        # Purge Tcl/Tk state from Resolve's Python interpreter.
+        # Tkinter's C extension keeps internal state that can destabilize
+        # Resolve's process if left behind after dialogs close.
+        try:
+            import tkinter as _tk_cleanup
+            if _tk_cleanup._default_root:
+                try:
+                    _tk_cleanup._default_root.quit()
+                    _tk_cleanup._default_root.destroy()
+                except Exception:
+                    pass
+                _tk_cleanup._default_root = None
+        except Exception:
+            pass
+
+        import gc
+        gc.collect()
+        _log("Cleanup complete")
+
 
 try:
     main()
@@ -1300,5 +1455,18 @@ except Exception as e:
     _log(f"FATAL: {e}\n{traceback.format_exc()}")
     try:
         show_error(_TITLE, f"Fatal error:\n{e}")
+    except Exception:
+        pass
+finally:
+    # Final Tcl/Tk purge (covers both normal exit and fatal error dialogs)
+    try:
+        import tkinter as _tk_final
+        if _tk_final._default_root:
+            try:
+                _tk_final._default_root.quit()
+                _tk_final._default_root.destroy()
+            except Exception:
+                pass
+            _tk_final._default_root = None
     except Exception:
         pass

@@ -6,7 +6,8 @@ import logging
 import re
 from dataclasses import dataclass
 
-from config import cfg, MODEL_SIZE, DEVICE, COMPUTE_TYPE, IS_MAC
+from config import cfg
+import config as _config
 
 log = logging.getLogger(__name__)
 
@@ -72,17 +73,19 @@ def is_hallucination(text: str) -> bool:
 
 class Transcriber:
     def __init__(self):
-        if IS_MAC:
+        if _config.IS_MAC:
             import mlx_whisper
             self._mlx = mlx_whisper
             self.model = None
-            log.info(f"Loading model '{MODEL_SIZE}' with MLX (Metal)...")
-            # Warm up with 1s silence
+            log.info(f"Loading model '{_config.MODEL_SIZE}' with MLX (Metal)...")
+            # Warm up: forces model load + Metal kernel compilation at __init__
+            # so the first real transcribe() call doesn't pay the cost. Also
+            # surfaces broken downloads / configs before we render audio.
             try:
                 import numpy as np
                 self._mlx.transcribe(
                     np.zeros(16000, dtype=np.float32),
-                    path_or_hf_repo=MODEL_SIZE,
+                    path_or_hf_repo=_config.MODEL_SIZE,
                 )
             except Exception as e:
                 log.error(f"MLX model warm-up failed: {e}")
@@ -90,15 +93,15 @@ class Transcriber:
         else:
             from faster_whisper import WhisperModel
             self._mlx = None
-            log.info(f"Loading model '{MODEL_SIZE}' on {DEVICE} ({COMPUTE_TYPE})...")
+            log.info(f"Loading model '{_config.MODEL_SIZE}' on {_config.DEVICE} ({_config.COMPUTE_TYPE})...")
             try:
                 self.model = WhisperModel(
-                    MODEL_SIZE,
-                    device=DEVICE,
-                    compute_type=COMPUTE_TYPE,
+                    _config.MODEL_SIZE,
+                    device=_config.DEVICE,
+                    compute_type=_config.COMPUTE_TYPE,
                 )
             except Exception as e:
-                if DEVICE == "cuda":
+                if _config.DEVICE == "cuda":
                     err_str = str(e).lower()
                     if "out of memory" in err_str or "oom" in err_str:
                         log.error("GPU out of memory. Close other GPU apps.")
@@ -107,7 +110,7 @@ class Transcriber:
                     log.info("Falling back to CPU mode (slower but compatible)...")
                     try:
                         self.model = WhisperModel(
-                            MODEL_SIZE,
+                            _config.MODEL_SIZE,
                             device="cpu",
                             compute_type="int8",
                         )
@@ -130,7 +133,7 @@ class Transcriber:
             List of Segment objects, each containing Word objects with timing.
         """
         try:
-            if IS_MAC:
+            if _config.IS_MAC:
                 return self._transcribe_mlx(audio_path, on_progress)
             else:
                 return self._transcribe_faster_whisper(audio_path, on_progress)
@@ -210,20 +213,11 @@ class Transcriber:
         return segments
 
     def _transcribe_mlx(self, audio_path: str, on_progress=None) -> list:
-        import numpy as np
-        import soundfile as sf
-
-        audio, sr = sf.read(audio_path, dtype="float32")
-        if len(audio.shape) > 1:
-            audio = audio.mean(axis=1)
-        if sr != 16000:
-            # Resample to 16kHz
-            import resampy
-            audio = resampy.resample(audio, sr, 16000)
-
+        # mlx_whisper handles decoding via ffmpeg when given a path string,
+        # which covers MP4/MOV/WAV/etc. without us needing soundfile+resampy.
         result = self._mlx.transcribe(
-            audio,
-            path_or_hf_repo=MODEL_SIZE,
+            audio_path,
+            path_or_hf_repo=_config.MODEL_SIZE,
             language=cfg["language"],
             word_timestamps=True,
         )
@@ -231,22 +225,10 @@ class Transcriber:
         if cfg["language"] is None and result.get("language"):
             log.info(f"Detected language: {result['language']}")
 
-        duration = len(audio) / 16000.0  # audio is already 16kHz at this point
-
+        # mlx_whisper.transcribe is synchronous -- no per-segment progress.
         segments = []
         raw_segs = result.get("segments", [])
-        last_pct = -1
         for seg in raw_segs:
-            seg_end = seg.get("end", 0.0)
-            if on_progress and duration > 0:
-                try:
-                    pct = min(int(seg_end / duration * 100), 99)
-                    if pct > last_pct:
-                        last_pct = pct
-                        on_progress(pct)
-                except Exception:
-                    pass
-
             seg_text = seg.get("text", "").strip()
             if is_hallucination(seg_text):
                 continue

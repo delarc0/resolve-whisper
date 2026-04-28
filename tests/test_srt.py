@@ -1,0 +1,166 @@
+"""Tests for srt.py chunking + formatting helpers.
+
+Run from project root:  ./.venv/bin/python -m unittest tests/test_srt.py
+"""
+import os
+import sys
+import unittest
+from dataclasses import dataclass
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from srt import (  # noqa: E402
+    _format_timestamp,
+    _split_into_lines,
+    strip_punct_text,
+    words_to_captions,
+)
+
+
+@dataclass
+class W:
+    """Minimal Word stand-in for transcribe.Word."""
+    text: str
+    start: float
+    end: float
+    probability: float = 1.0
+
+
+@dataclass
+class S:
+    """Minimal Segment stand-in."""
+    text: str
+    start: float
+    end: float
+    words: list
+
+
+def seg(words):
+    return S(text=" ".join(w.text for w in words),
+             start=words[0].start, end=words[-1].end, words=words)
+
+
+class TestFormatTimestamp(unittest.TestCase):
+    def test_zero(self):
+        self.assertEqual(_format_timestamp(0), "00:00:00,000")
+
+    def test_negative_clamps_to_zero(self):
+        self.assertEqual(_format_timestamp(-5), "00:00:00,000")
+
+    def test_milliseconds(self):
+        self.assertEqual(_format_timestamp(1.234), "00:00:01,234")
+
+    def test_minutes_seconds(self):
+        self.assertEqual(_format_timestamp(125.5), "00:02:05,500")
+
+    def test_hours(self):
+        self.assertEqual(_format_timestamp(3661.001), "01:01:01,001")
+
+
+class TestSplitIntoLines(unittest.TestCase):
+    def test_short_fits_one_line(self):
+        self.assertEqual(_split_into_lines("Hej", 42), ["Hej"])
+
+    def test_wraps_at_word_boundary(self):
+        self.assertEqual(
+            _split_into_lines("Vi ska käka lite frukost", 12),
+            ["Vi ska käka", "lite frukost"],
+        )
+
+    def test_one_oversized_word_stays_alone(self):
+        # Single word longer than max_chars survives as its own line
+        self.assertEqual(_split_into_lines("ettjättelångtord", 5), ["ettjättelångtord"])
+
+
+class TestStripPunctText(unittest.TestCase):
+    def test_basic(self):
+        self.assertEqual(strip_punct_text("hej, vad? heter. du!"), "hej vad heter du")
+
+    def test_keeps_unicode_letters(self):
+        self.assertEqual(strip_punct_text("är åäö."), "är åäö")
+
+    def test_collapses_extra_spaces(self):
+        self.assertEqual(strip_punct_text("a,, b!! c"), "a b c")
+
+
+class TestWordsToCaptions(unittest.TestCase):
+    """words_to_captions reads max_words/max_chars/etc from cfg, so we monkey-
+    patch the cfg dict for each scenario."""
+
+    def setUp(self):
+        from srt import cfg
+        self.cfg = cfg
+        # Snapshot
+        self._saved = dict(cfg)
+        cfg.update({
+            "max_words_per_caption": 4,
+            "max_chars_per_line": 26,
+            "max_lines": 1,
+            "min_duration_s": 1.0,
+            "max_duration_s": 7.0,
+            "gap_frames": 2,
+        })
+
+    def tearDown(self):
+        self.cfg.clear()
+        self.cfg.update(self._saved)
+
+    def test_period_forces_split_even_with_no_pause(self):
+        # "frukost." 0.0-0.5, "Men" 0.51-0.6 -- pause 0.01s, but period must split
+        words = [
+            W("Vi", 0.0, 0.1), W("ska", 0.12, 0.2), W("käka", 0.22, 0.3),
+            W("frukost.", 0.32, 0.5), W("Men", 0.51, 0.6),
+        ]
+        caps = words_to_captions([seg(words)], fps=25.0)
+        # First caption ends with "frukost.", next starts with "Men"
+        self.assertTrue(caps[0]["text"].endswith("frukost."))
+        self.assertTrue(caps[1]["text"].startswith("Men"))
+
+    def test_max_words_caps_chunk_size(self):
+        words = [W(str(i), i * 0.1, i * 0.1 + 0.05) for i in range(10)]
+        caps = words_to_captions([seg(words)], fps=25.0)
+        # 10 words / max 4 per caption = at least 3 captions
+        self.assertGreaterEqual(len(caps), 3)
+        for cap in caps:
+            self.assertLessEqual(len(cap["text"].split()), 4)
+
+    def test_micro_pause_breaks_when_caption_old(self):
+        # Long block (>0.6s) followed by a small pause (>0.06s) -> should break
+        words = [
+            W("a", 0.00, 0.10), W("b", 0.11, 0.20), W("c", 0.21, 0.30),
+            W("d", 0.31, 0.70),                          # block now 0.7s long
+            W("e", 0.79, 0.85),                          # 0.09s gap -- should split
+        ]
+        caps = words_to_captions([seg(words)], fps=25.0)
+        # "e" should be in a new caption, not appended to the first
+        self.assertEqual(len(caps), 2)
+        self.assertEqual(caps[1]["text"], "e")
+
+    def test_micro_pause_ignored_when_caption_young(self):
+        # Same micro-pause but block is too young -- shouldn't split
+        words = [
+            W("a", 0.00, 0.10), W("b", 0.11, 0.20),     # block only 0.2s
+            W("c", 0.29, 0.40),                          # 0.09s gap
+        ]
+        caps = words_to_captions([seg(words)], fps=25.0)
+        self.assertEqual(len(caps), 1)
+
+    def test_hard_pause_always_breaks(self):
+        # >0.18s pause splits regardless of block age
+        words = [
+            W("a", 0.0, 0.05),
+            W("b", 0.30, 0.40),  # 0.25s gap -- hard pause
+        ]
+        caps = words_to_captions([seg(words)], fps=25.0)
+        self.assertEqual(len(caps), 2)
+
+    def test_min_duration_extends_short_caption(self):
+        words = [W("a", 0.0, 0.05), W("b", 1.0, 1.05)]
+        caps = words_to_captions([seg(words)], fps=25.0)
+        # First "a" caption only 0.05s in raw words; should extend to min 1.0s
+        first = caps[0]
+        self.assertGreaterEqual(first["end"] - first["start"], 0.5)
+
+
+if __name__ == "__main__":
+    unittest.main()

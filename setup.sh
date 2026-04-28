@@ -2,27 +2,38 @@
 set -e
 
 echo ""
-echo "  LAB37 TOOLS: Resolve Whisper"
+echo "  LAB37 TOOLS: Resolve Whisper (Mac)"
 echo "  AI-powered captions for DaVinci Resolve"
 echo "  ========================================"
 echo ""
 
-# Check for Python
+# --- Python ---
 if ! command -v python3 &>/dev/null; then
     echo "  ERROR: Python 3 not found."
-    echo "  Install with: brew install python"
+    echo "  Install with: brew install python@3.12"
     exit 1
 fi
 
-# Check Python version >= 3.10
 PY_VER=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
 PY_MAJ=$(echo "$PY_VER" | cut -d. -f1)
 PY_MIN=$(echo "$PY_VER" | cut -d. -f2)
 if [ "$PY_MAJ" -lt 3 ] || ([ "$PY_MAJ" -eq 3 ] && [ "$PY_MIN" -lt 10 ]); then
     echo "  ERROR: Python 3.10+ required. Found: $PY_VER"
+    echo "  brew install python@3.12, then re-run with PATH=\"/opt/homebrew/opt/python@3.12/libexec/bin:\$PATH\""
     exit 1
 fi
 echo "  Python $PY_VER OK"
+
+# --- ffmpeg (mlx-whisper needs it for non-WAV decoding) ---
+if ! command -v ffmpeg &>/dev/null; then
+    echo "  WARN: ffmpeg not in PATH. Installing via brew..."
+    if ! command -v brew &>/dev/null; then
+        echo "  ERROR: brew not found. Install ffmpeg manually: brew install ffmpeg"
+        exit 1
+    fi
+    brew install ffmpeg
+fi
+echo "  ffmpeg OK"
 
 APP_DIR="$(cd "$(dirname "$0")" && pwd)"
 
@@ -37,41 +48,37 @@ echo "  [2/4] Installing dependencies..."
 "$APP_DIR/.venv/bin/pip" install --quiet --upgrade pip
 "$APP_DIR/.venv/bin/pip" install --quiet mlx mlx-whisper soundfile resampy numpy
 
-# Verify
-"$APP_DIR/.venv/bin/python3" -c "import mlx_whisper; print('  mlx-whisper OK')" || {
+"$APP_DIR/.venv/bin/python3" -c "import mlx_whisper" || {
     echo "  ERROR: Dependencies failed to install."
     exit 1
 }
 
-# Resolve Scripts folder - check multiple paths (varies by Resolve version)
-RESOLVE_SCRIPTS=""
-CANDIDATES=(
-    "$HOME/Library/Application Support/Blackmagic Design/DaVinci Resolve/Fusion/Scripts/Utility"
-    "$HOME/Library/Application Support/Blackmagic Design/DaVinci Resolve/Support/Fusion/Scripts/Utility"
-)
-for candidate in "${CANDIDATES[@]}"; do
-    parent_dir="$(dirname "$candidate")"
-    if [ -d "$parent_dir" ]; then
-        RESOLVE_SCRIPTS="$candidate"
-        break
-    fi
-done
-# Fall back to the most common path
-if [ -z "$RESOLVE_SCRIPTS" ]; then
-    RESOLVE_SCRIPTS="${CANDIDATES[0]}"
-fi
+# --- Resolve Scripts folder ---
+# Mac Resolve 20 has a known bug where scripts in Utility/ don't appear in
+# Workspace > Scripts. Page-specific subfolders (Edit/Comp/Color/Deliver) DO
+# work, so we install to Edit/ since captions are an Edit-page task.
+# Mac Resolve also doesn't list .py files in the menu, only .lua -- so a
+# Lua launcher shells out to caption.py.
+RESOLVE_SCRIPTS="$HOME/Library/Application Support/Blackmagic Design/DaVinci Resolve/Fusion/Scripts/Edit"
 
-echo "  [3/4] Installing script to Resolve..."
+echo "  [3/4] Installing Lua launchers to Resolve..."
 mkdir -p "$RESOLVE_SCRIPTS"
-cp "$APP_DIR/resolve_script.py" "$RESOLVE_SCRIPTS/LAB37 Resolve Whisper.py"
-
-# Write pointer file
+# Shared launcher invoked by every preset (underscore-prefixed so it sorts
+# above the LAB37 entries in the Scripts menu and reads as internal)
+cp "$APP_DIR/launcher.lua" "$RESOLVE_SCRIPTS/_launcher.lua"
+# Preset menu entries: one per common workflow
+cp "$APP_DIR/presets/LAB37 Reels.lua"   "$RESOLVE_SCRIPTS/"
+cp "$APP_DIR/presets/LAB37 Podcast.lua" "$RESOLVE_SCRIPTS/"
+cp "$APP_DIR/presets/LAB37 Auto.lua"    "$RESOLVE_SCRIPTS/"
 echo "$APP_DIR" > "$RESOLVE_SCRIPTS/resolve_whisper_path.txt"
 
-echo "  [4/4] Downloading AI model (first time only, ~1.5 GB)..."
+# Pre-create the captions output dir referenced in the post-install message
+mkdir -p "$HOME/Desktop/Captions"
+
+echo "  [4/4] Downloading AI model (first time only, ~3 GB)..."
 "$APP_DIR/.venv/bin/python3" -c "
 import mlx_whisper, numpy as np
-mlx_whisper.transcribe(np.zeros(16000, dtype=np.float32), path_or_hf_repo='mlx-community/whisper-large-v3-turbo')
+mlx_whisper.transcribe(np.zeros(16000, dtype=np.float32), path_or_hf_repo='mlx-community/whisper-large-v3-mlx')
 " 2>/dev/null && echo "         Model ready." || echo "         Model will download on first use instead."
 
 echo ""
@@ -82,11 +89,14 @@ echo ""
 echo "  How to use:"
 echo "    1. Open DaVinci Resolve Studio"
 echo "    2. Select a timeline, set in/out points (I and O)"
-echo "    3. Workspace > Scripts > LAB37 Resolve Whisper"
-echo "    4. Wait for the progress window to finish"
-echo "    5. File > Import > Subtitle to add the .srt"
+echo "    3. Workspace > Scripts > Edit > LAB37 (pick a preset):"
+echo "       - LAB37 Reels    -- Text+ styled, 1-4 words, no punctuation"
+echo "       - LAB37 Podcast  -- plain SRT, full sentences"
+echo "       - LAB37 Auto     -- auto-detect language, plain SRT"
+echo "    4. Captions auto-import in ~10s for short clips"
 echo ""
-echo "  Captions are saved to: ~/Desktop/Captions/"
+echo "  Captions also saved to: ~/Desktop/Captions/"
+echo "  Live progress log:      /tmp/resolve_whisper.log"
 echo ""
 echo "  LAB37 TOOLS // lab37.se"
 echo ""

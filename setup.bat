@@ -92,7 +92,7 @@ echo  [3/4] Installing script to Resolve...
 if not exist "%RESOLVE_SCRIPTS%" (
     mkdir "%RESOLVE_SCRIPTS%"
 )
-copy /y "%APP_DIR%\resolve_script.py" "%RESOLVE_SCRIPTS%\LAB37 Resolve Whisper.py" >nul
+copy /y "%APP_DIR%\launcher_stub.py" "%RESOLVE_SCRIPTS%\LAB37 Resolve Whisper.py" >nul
 
 :: Write a pointer file so the Resolve script knows where we live
 echo %APP_DIR%> "%RESOLVE_SCRIPTS%\resolve_whisper_path.txt"

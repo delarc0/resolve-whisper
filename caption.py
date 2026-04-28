@@ -21,6 +21,10 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
+# Resolve scripting API constants for media_pool.AppendToTimeline mediaType
+MEDIA_TYPE_VIDEO = 1
+MEDIA_TYPE_SUBTITLE = 2
+
 
 def get_resolve():
     """Connect to a running DaVinci Resolve Studio instance."""
@@ -81,39 +85,51 @@ def render_audio(project, timeline, output_dir: str) -> str:
 
     log.info("Rendering timeline audio...")
 
-    # Discover available codecs for Wave format
-    _format_set = False
+    # Prefer Resolve's built-in "Audio Only" preset -- on Mac the
+    # GetRenderCodecs API returns empty for Wave/QuickTime so we can't
+    # configure audio-only via SetCurrentRenderFormatAndCodec, but the
+    # preset is still there.
+    _preset_loaded = False
+    # Resolve's built-in is named exactly "Audio Only". Match that explicitly
+    # rather than substring -- avoids matching "Audio Master" or future presets
+    # that happen to contain those words.
+    _AUDIO_ONLY_NAMES = ("Audio Only", "audio only", "Audio-Only", "audio-only")
     try:
-        codecs = project.GetRenderCodecs("Wave")
-        if codecs:
-            codec_key = list(codecs.keys())[0]
-            if project.SetCurrentRenderFormatAndCodec("Wave", codec_key):
-                log.info(f"Render format set: Wave/{codec_key}")
-                _format_set = True
-    except Exception:
-        pass
+        presets = project.GetRenderPresetList() or []
+        log.info(f"Available render presets: {presets}")
+        for name in _AUDIO_ONLY_NAMES:
+            if name in presets and project.LoadRenderPreset(name):
+                log.info(f"Loaded render preset: {name}")
+                _preset_loaded = True
+                break
+    except Exception as e:
+        log.warning(f"LoadRenderPreset failed: {e}")
 
-    if not _format_set:
-        for fmt, codec in [("Wave", "LinearPCM"), ("wav", "LinearPCM"), ("Wave", "PCM")]:
+    if not _preset_loaded:
+        # Fallback: video render at minimum resolution. Encoding cost is
+        # close to zero so this is mostly the audio render time.
+        log.info("No 'Audio Only' preset; falling back to MP4/H264 at 128x72")
+        for fmt, codec in [("MP4", "H264"), ("MP4", "H265")]:
             try:
                 if project.SetCurrentRenderFormatAndCodec(fmt, codec):
-                    log.info(f"Render format set (fallback): {fmt}/{codec}")
-                    _format_set = True
+                    log.info(f"Render format set: {fmt}/{codec}")
                     break
             except Exception:
                 pass
 
-    if not _format_set:
-        log.warning("Could not set WAV format, using Resolve default")
-
-    # Don't set AudioBitDepth/AudioSampleRate -- they can break rendering
-    # and faster-whisper handles any sample rate internally
-    project.SetRenderSettings({
+    settings = {
         "ExportAudio": True,
-        "ExportVideo": False,
         "TargetDir": output_dir,
         "CustomName": wav_name,
-    })
+    }
+    if not _preset_loaded:
+        # Only force these for the fallback path; audio-only preset already
+        # has the right defaults and forcing FormatWidth/Height seemed to be
+        # ignored by Resolve in earlier tests.
+        settings["ExportVideo"] = True
+        settings["FormatWidth"] = 128
+        settings["FormatHeight"] = 72
+    project.SetRenderSettings(settings)
 
     job_id = project.AddRenderJob()
     if not job_id:
@@ -252,17 +268,7 @@ def run_resolve_mode(args):
         log.warning("No speech detected in timeline audio.")
         return 1
 
-    # Apply punctuation stripping if requested
-    if getattr(args, "strip_punctuation", False):
-        import re as _re
-        _punct = _re.compile(r'[^\w\s]', _re.UNICODE)
-        for seg in segments:
-            seg.text = _re.sub(r' +', ' ', _punct.sub('', seg.text)).strip()
-            for w in seg.words:
-                w.text = _punct.sub('', w.text).strip()
-            seg.words = [w for w in seg.words if w.text]
-        segments = [s for s in segments if s.words]
-        log.info("Punctuation stripped from captions")
+    strip_punct = getattr(args, "strip_punctuation", False)
 
     # Generate SRT
     output_dir = args.output_dir or cfg["output_dir"]
@@ -277,15 +283,32 @@ def run_resolve_mode(args):
     safe_name = "".join(c if c.isalnum() or c in " -_" else "_" for c in timeline_name)
     srt_path = os.path.join(output_dir, f"{safe_name}.srt")
 
-    success = write_srt(segments, srt_path, fps)
+    success = write_srt(segments, srt_path, fps, strip_punctuation=strip_punct)
     if not success:
         return 1
 
-    # Switch back to Edit page (rendering puts us on Deliver)
+    # Switch back to Edit page before import so the new track is visible.
     try:
         resolve.OpenPage("edit")
     except Exception:
         pass
+
+    # Insert captions: Text+ on a video track (styled), or SRT subtitle track.
+    if getattr(args, "textplus", False):
+        from srt import words_to_captions
+        from textplus import insert_textplus_captions
+        captions = words_to_captions(segments, fps)
+        if strip_punct:
+            from srt import strip_punct_text
+            for c in captions:
+                c["text"] = strip_punct_text(c["text"])
+        app_dir = os.path.dirname(os.path.abspath(__file__))
+        imported = insert_textplus_captions(project, timeline, captions, fps, app_dir)
+        if not imported:
+            log.warning("Text+ insertion failed; falling back to SRT subtitle import")
+            imported = _import_srt_to_timeline(timeline, srt_path, project=project)
+    else:
+        imported = _import_srt_to_timeline(timeline, srt_path, project=project)
 
     # Clean up temp audio
     try:
@@ -295,17 +318,62 @@ def run_resolve_mode(args):
 
     log.info("")
     log.info(f"SRT saved to: {srt_path}")
-    log.info("To import: File > Import > Subtitle in Resolve")
-
-    # Open output folder
-    _open_folder(output_dir)
+    if imported:
+        log.info("Captions imported into timeline.")
+    else:
+        log.info("Auto-import failed. File > Import > Subtitle to add manually.")
+        _open_folder(output_dir)
 
     return 0
+
+
+def _import_srt_to_timeline(timeline, srt_path: str, project=None) -> bool:
+    """Add a subtitle track if needed, then import the SRT onto it."""
+    try:
+        if timeline.GetTrackCount("subtitle") == 0:
+            timeline.AddTrack("subtitle")
+    except Exception as e:
+        log.warning(f"AddTrack(subtitle) failed: {e}")
+
+    # 1. Direct timeline import (may not support SRT pre-v20.3+)
+    try:
+        if timeline.ImportIntoTimeline(srt_path):
+            return True
+    except Exception as e:
+        log.warning(f"ImportIntoTimeline failed: {e}")
+
+    # 2. Fallback: import into media pool, then append to subtitle track
+    if project is None:
+        return False
+    try:
+        media_pool = project.GetMediaPool()
+        imported = media_pool.ImportMedia([srt_path])
+        if not imported:
+            log.warning("ImportMedia returned empty for SRT")
+            return False
+        sub_track = timeline.GetTrackCount("subtitle")
+        result = media_pool.AppendToTimeline([{
+            "mediaPoolItem": imported[0],
+            "trackIndex": sub_track,
+            "mediaType": MEDIA_TYPE_SUBTITLE,
+        }])
+        return bool(result)
+    except Exception as e:
+        log.warning(f"Media pool SRT import failed: {e}")
+        return False
 
 
 def run_file_mode(args):
     """Transcribe a file directly without Resolve."""
     from config import cfg
+
+    # Apply device override BEFORE importing Transcriber
+    # (it reads _config.DEVICE when creating the model)
+    if getattr(args, "device", None):
+        import config as _cfg_mod
+        _cfg_mod.DEVICE = args.device
+        _cfg_mod.COMPUTE_TYPE = "int8" if args.device == "cpu" else "float16"
+
     from transcribe import Transcriber
     from srt import write_srt, write_captions_json
 
@@ -355,29 +423,18 @@ def run_file_mode(args):
         log.warning("No speech detected.")
         return 1
 
-    if getattr(args, "strip_punctuation", False):
-        import re as _re
-        _punct = _re.compile(r'[^\w\s]', _re.UNICODE)
-        for seg in segments:
-            seg.text = _re.sub(r' +', ' ', _punct.sub('', seg.text)).strip()
-            for w in seg.words:
-                w.text = _punct.sub('', w.text).strip()
-            # Filter out words that became empty after stripping
-            seg.words = [w for w in seg.words if w.text]
-        # Remove segments with no words left
-        segments = [s for s in segments if s.words]
-        log.info("Punctuation stripped from captions")
+    strip_punct = getattr(args, "strip_punctuation", False)
 
     # Determine FPS (default 24 for standalone files)
     fps = args.fps or 24.0
 
-    success = write_srt(segments, srt_path, fps)
+    success = write_srt(segments, srt_path, fps, strip_punctuation=strip_punct)
     if not success:
         return 1
 
     # Write JSON sidecar for Text+ insertion mode
     json_path = os.path.splitext(srt_path)[0] + ".json"
-    write_captions_json(segments, json_path, fps)
+    write_captions_json(segments, json_path, fps, strip_punctuation=strip_punct)
 
     log.info("")
     log.info(f"SRT saved to: {srt_path}")
@@ -451,6 +508,17 @@ Examples:
         "--strip-punctuation",
         action="store_true",
         help="Remove all punctuation from captions.",
+    )
+    parser.add_argument(
+        "--textplus",
+        action="store_true",
+        help="Insert captions as styled Text+ clips on a new video track "
+             "(Reels-friendly), instead of importing as a plain SRT track.",
+    )
+    parser.add_argument(
+        "--device",
+        choices=["cuda", "cpu"],
+        help="Force device (cuda or cpu). Default: auto-detect.",
     )
 
     args = parser.parse_args()
