@@ -72,165 +72,78 @@ def get_timeline_info(resolve):
 
 
 def render_audio(project, timeline, output_dir: str) -> str:
-    """Render timeline audio via Resolve's render API."""
+    """Render timeline audio via Resolve's Quick Export API.
+
+    Quick Export does NOT modify the project's persistent render settings
+    (TargetDir, CustomName, format, codec). Compared to AddRenderJob, it
+    fires a one-shot render with our params and leaves the user's normal
+    Deliver-page settings completely untouched.
+    """
     timeline_name = timeline.GetName()
     safe_name = "".join(c if c.isalnum() or c in " -_" else "_" for c in timeline_name)
     if not safe_name.strip():
         safe_name = "timeline_audio"
     wav_name = f"{safe_name}_audio"
 
-    log.info("Rendering timeline audio...")
+    log.info("Rendering timeline audio via Quick Export...")
 
-    # Prefer Resolve's built-in "Audio Only" preset -- on Mac the
-    # GetRenderCodecs API returns empty for Wave/QuickTime so we can't
-    # configure audio-only via SetCurrentRenderFormatAndCodec, but the
-    # preset is still there.
-    _preset_loaded = False
-    _previous_preset = None
-    # Resolve's built-in is named exactly "Audio Only". Match that explicitly
-    # rather than substring -- avoids matching "Audio Master" or future presets
-    # that happen to contain those words.
     _AUDIO_ONLY_NAMES = ("Audio Only", "audio only", "Audio-Only", "audio-only")
     try:
-        # Capture the project's current render preset so we can restore it.
-        # Otherwise the project stays "dirty" with our "Audio Only" override
-        # and Resolve prompts to save on quit.
-        try:
-            _previous_preset = project.GetCurrentRenderFormatAndCodec()
-        except Exception:
-            pass
-        presets = project.GetRenderPresetList() or []
-        log.info(f"Available render presets: {presets}")
-        for name in _AUDIO_ONLY_NAMES:
-            if name in presets and project.LoadRenderPreset(name):
-                log.info(f"Loaded render preset: {name}")
-                _preset_loaded = True
-                break
+        presets = project.GetQuickExportRenderPresets() or []
+        log.info(f"Quick Export presets: {presets}")
     except Exception as e:
-        log.warning(f"LoadRenderPreset failed: {e}")
+        log.warning(f"GetQuickExportRenderPresets failed: {e}")
+        presets = []
 
-    if not _preset_loaded:
-        # Fallback: video render at minimum resolution. Encoding cost is
-        # close to zero so this is mostly the audio render time.
-        log.info("No 'Audio Only' preset; falling back to MP4/H264 at 128x72")
-        for fmt, codec in [("MP4", "H264"), ("MP4", "H265")]:
-            try:
-                if project.SetCurrentRenderFormatAndCodec(fmt, codec):
-                    log.info(f"Render format set: {fmt}/{codec}")
-                    break
-            except Exception:
-                pass
-
-    settings = {
-        "ExportAudio": True,
-        "TargetDir": output_dir,
-        "CustomName": wav_name,
-    }
-    if not _preset_loaded:
-        # Only force these for the fallback path; audio-only preset already
-        # has the right defaults and forcing FormatWidth/Height seemed to be
-        # ignored by Resolve in earlier tests.
-        settings["ExportVideo"] = True
-        settings["FormatWidth"] = 128
-        settings["FormatHeight"] = 72
-    project.SetRenderSettings(settings)
-
-    job_id = project.AddRenderJob()
-    if not job_id:
-        log.error("Failed to add render job. Check Resolve render settings.")
+    chosen = next((n for n in _AUDIO_ONLY_NAMES if n in presets), None)
+    if not chosen:
+        log.error("'Audio Only' preset not in Quick Export list.")
         return None
 
-    project.StartRendering([job_id])  # Only start OUR job, not all queued jobs
+    try:
+        result = project.RenderWithQuickExport(chosen, {
+            "TargetDir": output_dir,
+            "CustomName": wav_name,
+            "EnableUpload": False,
+        })
+        log.info(f"RenderWithQuickExport returned: {result}")
+    except Exception as e:
+        log.error(f"RenderWithQuickExport failed: {e}")
+        return None
 
-    # Give Resolve a moment to transition from Ready to Rendering
-    time.sleep(2)
-
-    # Poll with timeout using actual job status
+    # Quick Export's blocking semantics aren't documented; poll for the
+    # output file with a generous timeout in case it returns before the
+    # write is complete.
+    _AUDIO_EXTS = (".wav", ".mov", ".mp4", ".flac", ".mp3", ".aac", ".m4a", ".mxf")
     _timeout = 600  # 10 minutes
     _start = time.time()
-    _ready_count = 0
-    while True:
-        try:
-            status = project.GetRenderJobStatus(job_id)
-            job_status = status.get("JobStatus", "")
-        except Exception:
-            job_status = ""
-
-        if job_status.lower() in ("complete", "completed"):
-            break
-        if job_status.lower() in ("failed", "cancelled", "canceled"):
-            log.error(f"Render failed with status: {job_status}")
-            try:
-                project.DeleteRenderJob(job_id)
-            except Exception:
-                pass
-            return None
-
-        if not project.IsRenderingInProgress() and job_status.lower() in ("ready", ""):
-            _ready_count += 1
-            if _ready_count >= 10:
-                log.error(f"Render never started (status: {job_status})")
-                try:
-                    project.DeleteRenderJob(job_id)
-                except Exception:
-                    pass
-                return None
-        else:
-            _ready_count = 0
-
-        if time.time() - _start > _timeout:
-            log.error("Render timed out after 10 minutes")
-            try:
-                project.DeleteRenderJob(job_id)
-            except Exception:
-                pass
-            return None
-
-        time.sleep(0.5)
-
-    # Clean up render job from queue
-    try:
-        project.DeleteRenderJob(job_id)
-    except Exception:
-        pass
-
-    # Restore the project's previous render preset so we don't leave the
-    # project dirty with our "Audio Only" override.
-    if _previous_preset is not None:
-        try:
-            fmt = _previous_preset.get("format")
-            codec = _previous_preset.get("codec")
-            if fmt and codec:
-                project.SetCurrentRenderFormatAndCodec(fmt, codec)
-        except Exception as e:
-            log.warning(f"Could not restore previous render preset: {e}")
-
-    # Find rendered audio file (accept any format)
     audio_path = None
-    try:
-        files = os.listdir(output_dir)
-        for ext in [".wav", ".mov", ".mp4", ".flac", ".mp3", ".aac", ".m4a", ".mxf"]:
-            for f in files:
-                if f.lower().endswith(ext):
-                    audio_path = os.path.join(output_dir, f)
-                    break
+    while time.time() - _start < _timeout:
+        try:
+            files = os.listdir(output_dir)
+        except FileNotFoundError:
+            files = []
+        for ext in _AUDIO_EXTS:
+            audio_path = next(
+                (os.path.join(output_dir, f) for f in files if f.lower().endswith(ext)),
+                None,
+            )
             if audio_path:
                 break
-        if not audio_path and files:
-            audio_path = os.path.join(output_dir, files[0])
-    except Exception as e:
-        log.error(f"Error listing output dir: {e}")
+        if audio_path:
+            break
+        time.sleep(0.5)
 
-    if audio_path:
-        try:
-            size_mb = os.path.getsize(audio_path) / (1024 * 1024)
-            log.info(f"Audio rendered: {audio_path} ({size_mb:.1f} MB)")
-        except Exception:
-            log.info(f"Audio rendered: {audio_path}")
-        return audio_path
+    if not audio_path:
+        log.error("Render completed but audio file not found within timeout.")
+        return None
 
-    log.error("Render completed but audio file not found.")
-    return None
+    try:
+        size_mb = os.path.getsize(audio_path) / (1024 * 1024)
+        log.info(f"Audio rendered: {audio_path} ({size_mb:.1f} MB)")
+    except Exception:
+        log.info(f"Audio rendered: {audio_path}")
+    return audio_path
 
 
 def run_resolve_mode(args):
