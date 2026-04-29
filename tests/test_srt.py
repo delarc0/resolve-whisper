@@ -146,10 +146,11 @@ class TestWordsToCaptions(unittest.TestCase):
         self.assertEqual(len(caps), 1)
 
     def test_hard_pause_always_breaks(self):
-        # >0.18s pause splits regardless of block age
+        # >0.18s pause splits regardless of block age, when neither word is
+        # in the connector list ("ja" / "nej" are content words in Swedish)
         words = [
-            W("a", 0.0, 0.05),
-            W("b", 0.30, 0.40),  # 0.25s gap -- hard pause
+            W("ja", 0.0, 0.05),
+            W("nej", 0.30, 0.40),  # 0.25s gap -- hard pause
         ]
         caps = words_to_captions([seg(words)], fps=25.0)
         self.assertEqual(len(caps), 2)
@@ -160,6 +161,67 @@ class TestWordsToCaptions(unittest.TestCase):
         # First "a" caption only 0.05s in raw words; should extend to min 1.0s
         first = caps[0]
         self.assertGreaterEqual(first["end"] - first["start"], 0.5)
+
+    def test_no_break_after_swedish_connector(self):
+        # "Bob och Tim" -- micro-pause before "Tim" but block ends on "och"
+        # (connector), so the chunker should keep going. Test isolates the
+        # connector-suppression logic from char/line limits.
+        from srt import cfg
+        cfg["max_chars_per_line"] = 100  # remove char-limit pressure
+        words = [
+            W("Bob", 0.00, 0.30),
+            W("och", 0.40, 0.70),  # block dur reaches 0.7s by end of "och"
+            W("Tim", 0.85, 1.10),  # 0.15s gap -- micro_pause would normally fire
+        ]
+        caps = words_to_captions([seg(words)], fps=25.0)
+        # Connector suppresses the break, so it stays as one caption
+        self.assertEqual(len(caps), 1)
+        self.assertIn("Tim", caps[0]["text"])
+
+    def test_break_after_connector_still_works_on_period(self):
+        # Hard punctuation always wins, even after a connector
+        words = [
+            W("Thomas",  0.00, 0.30),
+            W("Sjögren.", 0.32, 0.60),  # period -> hard break
+            W("Den",      0.65, 0.80),
+        ]
+        caps = words_to_captions([seg(words)], fps=25.0)
+        self.assertEqual(len(caps), 2)
+
+    def test_long_word_gets_solo_caption(self):
+        # A word held >= 0.45s = emphasized, should stand alone
+        words = [
+            W("ja",  0.00, 0.20),
+            W("absolut", 0.25, 0.85),  # 0.6s duration -- emphasized
+            W("inte", 0.90, 1.10),
+        ]
+        caps = words_to_captions([seg(words)], fps=25.0)
+        # Expect: ["ja", "absolut", "inte"]  -- 3 separate captions
+        self.assertEqual(len(caps), 3)
+        self.assertEqual(caps[1]["text"], "absolut")
+
+    def test_isolated_word_gets_solo_caption(self):
+        # Word with >= 0.25s pause on both sides = isolated, solo
+        words = [
+            W("hej", 0.00, 0.20),
+            W("vad",  0.60, 0.75),   # 0.40s pause before, 0.30s after -> solo
+            W("säger", 1.05, 1.30),
+            W("du",    1.32, 1.45),
+        ]
+        caps = words_to_captions([seg(words)], fps=25.0)
+        # "vad" is isolated -> own caption
+        texts = [c["text"] for c in caps]
+        self.assertIn("vad", texts)
+
+    def test_normal_words_dont_get_solo(self):
+        # Continuous speech, no long words, no big pauses -> normal grouping
+        words = [
+            W("ett", 0.0, 0.10), W("två", 0.11, 0.20),
+            W("tre", 0.21, 0.30), W("fyra", 0.31, 0.40),
+        ]
+        caps = words_to_captions([seg(words)], fps=25.0)
+        # Should be a single caption since nothing is emphasized
+        self.assertEqual(len(caps), 1)
 
 
 if __name__ == "__main__":

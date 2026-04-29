@@ -1,11 +1,11 @@
--- LAB37 Reels -- Text+ styled, single-line, 1-4 words, no punctuation
+-- LAB37 Reels -- single-line SRT, 1-3 words, no punctuation
 -- Self-contained: no dofile/require -- Resolve's Lua sandbox doesn't always
 -- handle them the way standard Lua does.
-
--- Reels = SRT subtitle track (Text+ on Mac Resolve 20 silently fails because
--- AddFusionComp returns None on PNG clips; style the track once in Resolve's
--- Inspector > Captions panel and the look applies to every Reels import).
-local PRESET_ARGS = "--language sv --max-words 4 --max-chars 26 --max-lines 1 --strip-punctuation"
+--
+-- max-words=3 (not 4): 4 reads as dense on a 9x16 reel even when it fits
+-- max-chars. Combined with the connector-suppression in srt.py, output
+-- variation lands naturally at 1-3 words depending on speech rhythm.
+local PRESET_ARGS = "--language sv --max-words 3 --max-chars 22 --max-lines 1 --strip-punctuation"
 
 print("[LAB37 Reels] Starting...")
 

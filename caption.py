@@ -21,10 +21,6 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-# Resolve scripting API constants for media_pool.AppendToTimeline mediaType
-MEDIA_TYPE_VIDEO = 1
-MEDIA_TYPE_SUBTITLE = 2
-
 
 def get_resolve():
     """Connect to a running DaVinci Resolve Studio instance."""
@@ -90,11 +86,19 @@ def render_audio(project, timeline, output_dir: str) -> str:
     # configure audio-only via SetCurrentRenderFormatAndCodec, but the
     # preset is still there.
     _preset_loaded = False
+    _previous_preset = None
     # Resolve's built-in is named exactly "Audio Only". Match that explicitly
     # rather than substring -- avoids matching "Audio Master" or future presets
     # that happen to contain those words.
     _AUDIO_ONLY_NAMES = ("Audio Only", "audio only", "Audio-Only", "audio-only")
     try:
+        # Capture the project's current render preset so we can restore it.
+        # Otherwise the project stays "dirty" with our "Audio Only" override
+        # and Resolve prompts to save on quit.
+        try:
+            _previous_preset = project.GetCurrentRenderFormatAndCodec()
+        except Exception:
+            pass
         presets = project.GetRenderPresetList() or []
         log.info(f"Available render presets: {presets}")
         for name in _AUDIO_ONLY_NAMES:
@@ -189,6 +193,17 @@ def render_audio(project, timeline, output_dir: str) -> str:
         project.DeleteRenderJob(job_id)
     except Exception:
         pass
+
+    # Restore the project's previous render preset so we don't leave the
+    # project dirty with our "Audio Only" override.
+    if _previous_preset is not None:
+        try:
+            fmt = _previous_preset.get("format")
+            codec = _previous_preset.get("codec")
+            if fmt and codec:
+                project.SetCurrentRenderFormatAndCodec(fmt, codec)
+        except Exception as e:
+            log.warning(f"Could not restore previous render preset: {e}")
 
     # Find rendered audio file (accept any format)
     audio_path = None
@@ -287,30 +302,7 @@ def run_resolve_mode(args):
     if not success:
         return 1
 
-    # Switch back to Edit page before import so the new track is visible.
-    try:
-        resolve.OpenPage("edit")
-    except Exception:
-        pass
-
-    # Insert captions: Text+ on a video track (styled), or SRT subtitle track.
-    if getattr(args, "textplus", False):
-        from srt import words_to_captions
-        from textplus import insert_textplus_captions
-        captions = words_to_captions(segments, fps)
-        if strip_punct:
-            from srt import strip_punct_text
-            for c in captions:
-                c["text"] = strip_punct_text(c["text"])
-        app_dir = os.path.dirname(os.path.abspath(__file__))
-        imported = insert_textplus_captions(project, timeline, captions, fps, app_dir)
-        if not imported:
-            log.warning("Text+ insertion failed; falling back to SRT subtitle import")
-            imported = _import_srt_to_timeline(timeline, srt_path, project=project)
-    else:
-        imported = _import_srt_to_timeline(timeline, srt_path, project=project)
-
-    # Clean up temp audio
+    # Clean up temp render
     try:
         shutil.rmtree(tmp_dir, ignore_errors=True)
     except Exception:
@@ -318,49 +310,9 @@ def run_resolve_mode(args):
 
     log.info("")
     log.info(f"SRT saved to: {srt_path}")
-    if imported:
-        log.info("Captions imported into timeline.")
-    else:
-        log.info("Auto-import failed. File > Import > Subtitle to add manually.")
-        _open_folder(output_dir)
-
+    log.info("Drag from Finder onto a subtitle track in your timeline.")
+    _open_folder(output_dir)
     return 0
-
-
-def _import_srt_to_timeline(timeline, srt_path: str, project=None) -> bool:
-    """Add a subtitle track if needed, then import the SRT onto it."""
-    try:
-        if timeline.GetTrackCount("subtitle") == 0:
-            timeline.AddTrack("subtitle")
-    except Exception as e:
-        log.warning(f"AddTrack(subtitle) failed: {e}")
-
-    # 1. Direct timeline import (may not support SRT pre-v20.3+)
-    try:
-        if timeline.ImportIntoTimeline(srt_path):
-            return True
-    except Exception as e:
-        log.warning(f"ImportIntoTimeline failed: {e}")
-
-    # 2. Fallback: import into media pool, then append to subtitle track
-    if project is None:
-        return False
-    try:
-        media_pool = project.GetMediaPool()
-        imported = media_pool.ImportMedia([srt_path])
-        if not imported:
-            log.warning("ImportMedia returned empty for SRT")
-            return False
-        sub_track = timeline.GetTrackCount("subtitle")
-        result = media_pool.AppendToTimeline([{
-            "mediaPoolItem": imported[0],
-            "trackIndex": sub_track,
-            "mediaType": MEDIA_TYPE_SUBTITLE,
-        }])
-        return bool(result)
-    except Exception as e:
-        log.warning(f"Media pool SRT import failed: {e}")
-        return False
 
 
 def run_file_mode(args):
@@ -508,12 +460,6 @@ Examples:
         "--strip-punctuation",
         action="store_true",
         help="Remove all punctuation from captions.",
-    )
-    parser.add_argument(
-        "--textplus",
-        action="store_true",
-        help="Insert captions as styled Text+ clips on a new video track "
-             "(Reels-friendly), instead of importing as a plain SRT track.",
     )
     parser.add_argument(
         "--device",

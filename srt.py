@@ -8,6 +8,33 @@ from config import cfg
 
 log = logging.getLogger(__name__)
 
+# Words that shouldn't END a caption -- ending here makes the line read as a
+# fragment ("Thomas Sjögren i" / "Mästerkocken..."). When the chunker is
+# about to break and the last word matches this set, it suppresses the break
+# so the connector sticks to the next word. Hard punctuation still wins.
+_NOBREAK_TRAILING = {
+    # Swedish prepositions / particles
+    "i", "av", "till", "för", "på", "om", "med", "från", "vid", "som",
+    "över", "under", "mot", "genom", "mellan", "utan",
+    # Conjunctions / discourse markers
+    "att", "och", "eller", "men", "så", "när", "om", "innan", "efter",
+    "fast", "trots", "ifall",
+    # Articles / determiners
+    "den", "det", "de", "en", "ett",
+    # Auxiliaries
+    "är", "var", "har", "hade", "ska", "skulle", "kan", "kunde", "får",
+    "fick", "vill", "ville", "måste", "borde",
+    # Pronouns
+    "jag", "du", "han", "hon", "vi", "ni", "min", "din", "sin", "vår", "er",
+    # English equivalents (for mixed/auto-detect)
+    "a", "an", "the", "of", "to", "in", "on", "at", "for", "with", "by",
+    "and", "or", "but", "so", "as", "is", "are", "was", "were",
+}
+
+
+def _strip_trailing_punct(s: str) -> str:
+    return s.rstrip(".,!?;:…")
+
 
 def _format_timestamp(seconds: float) -> str:
     """Convert seconds to SRT timestamp format: HH:MM:SS,mmm"""
@@ -44,6 +71,31 @@ def _split_into_lines(text: str, max_chars: int) -> list:
     return lines
 
 
+_SOLO_DURATION = 0.45   # word held this long = emphasized -> own caption
+_SOLO_PAUSE = 0.25      # silence this long on both sides = isolated -> own caption
+
+
+def _mark_emphasized(words: list) -> list:
+    """Return a list[bool] of which words deserve solo captions.
+
+    A word is "emphasized" when:
+      - it lasts >= _SOLO_DURATION seconds (held / drawn out by the speaker)
+      - OR it has >= _SOLO_PAUSE silence on both sides (isolated)
+    """
+    n = len(words)
+    flags = [False] * n
+    for i, w in enumerate(words):
+        duration = w.end - w.start
+        if duration >= _SOLO_DURATION:
+            flags[i] = True
+            continue
+        pause_before = w.start - words[i - 1].end if i > 0 else _SOLO_PAUSE
+        pause_after = words[i + 1].start - w.end if i < n - 1 else _SOLO_PAUSE
+        if pause_before >= _SOLO_PAUSE and pause_after >= _SOLO_PAUSE:
+            flags[i] = True
+    return flags
+
+
 def words_to_captions(segments: list, fps: float = 24.0) -> list:
     """
     Group transcription segments into caption blocks.
@@ -68,13 +120,16 @@ def words_to_captions(segments: list, fps: float = 24.0) -> list:
     if not all_words:
         return []
 
+    emphasized = _mark_emphasized(all_words)
+
     # Group words into caption blocks
     captions = []
     block_words = []
     block_text = ""
 
-    for word in all_words:
+    for idx, word in enumerate(all_words):
         w_text = word.text
+        is_emphasized = emphasized[idx]
 
         # Check if adding this word exceeds our limits
         test_text = f"{block_text} {w_text}".strip()
@@ -124,11 +179,23 @@ def words_to_captions(segments: list, fps: float = 24.0) -> list:
         else:
             punct_break = False
 
-        # Flush current block if needed
+        # Suppress soft breaks if the current block would end on a connector
+        # word ("Thomas Sjögren i" / "alla tre av de" -> bad). Hard punctuation
+        # and word/char/duration limits still force a break.
+        if block_words:
+            last_lc = _strip_trailing_punct(block_words[-1].text.lower())
+            ends_on_connector = last_lc in _NOBREAK_TRAILING
+        else:
+            ends_on_connector = False
+
+        # Flush current block if needed. Emphasized words always get their
+        # own caption: flush whatever's pending, write the word as a solo
+        # block, and reset.
         should_flush = block_words and (
             too_many_words or too_many_lines or too_long or
-            natural_break or
-            punct_break
+            punct_break or
+            is_emphasized or
+            (natural_break and not ends_on_connector)
         )
 
         if should_flush:
@@ -142,6 +209,18 @@ def words_to_captions(segments: list, fps: float = 24.0) -> list:
 
         block_words.append(word)
         block_text = f"{block_text} {w_text}".strip() if block_text else w_text
+
+        # If this word is emphasized, close the block right after adding it
+        # so it stands alone on screen.
+        if is_emphasized:
+            captions.append({
+                "start": block_words[0].start,
+                "end": block_words[-1].end,
+                "text": block_text,
+            })
+            block_words = []
+            block_text = ""
+            continue
 
     # Flush remaining
     if block_words:
