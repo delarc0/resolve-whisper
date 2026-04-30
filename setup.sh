@@ -35,6 +35,21 @@ if ! command -v ffmpeg &>/dev/null; then
 fi
 echo "  ffmpeg OK"
 
+# --- Tk bindings (needed for the floating progress window) ---
+# Homebrew Python doesn't bundle tk; without this the UI silently falls back
+# to log-only mode. Detect first to avoid an unnecessary brew install.
+if ! python3 -c "import tkinter" 2>/dev/null; then
+    PY_MM="$PY_MAJ.$PY_MIN"
+    if command -v brew &>/dev/null; then
+        echo "  WARN: tkinter missing. Installing python-tk@$PY_MM..."
+        brew install "python-tk@$PY_MM" || \
+            echo "  WARN: python-tk@$PY_MM install failed; UI will be log-only."
+    else
+        echo "  WARN: tkinter missing and brew unavailable; UI will be log-only."
+    fi
+fi
+python3 -c "import tkinter" 2>/dev/null && echo "  tkinter OK" || echo "  tkinter NOT available (UI will fall back to log-only)"
+
 APP_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 echo "  [1/4] Creating virtual environment..."
@@ -70,6 +85,7 @@ cp "$APP_DIR/launcher.lua" "$RESOLVE_SCRIPTS/_launcher.lua"
 cp "$APP_DIR/presets/LAB37 Reels.lua"   "$RESOLVE_SCRIPTS/"
 cp "$APP_DIR/presets/LAB37 Podcast.lua" "$RESOLVE_SCRIPTS/"
 cp "$APP_DIR/presets/LAB37 Auto.lua"    "$RESOLVE_SCRIPTS/"
+cp "$APP_DIR/presets/LAB37 Check.lua"   "$RESOLVE_SCRIPTS/"
 echo "$APP_DIR" > "$RESOLVE_SCRIPTS/resolve_whisper_path.txt"
 
 # Pre-create the captions output dir referenced in the post-install message
@@ -90,9 +106,10 @@ echo "  How to use:"
 echo "    1. Open DaVinci Resolve Studio"
 echo "    2. Select a timeline, set in/out points (I and O)"
 echo "    3. Workspace > Scripts > Edit > LAB37 (pick a preset):"
-echo "       - LAB37 Reels    -- Text+ styled, 1-4 words, no punctuation"
+echo "       - LAB37 Reels    -- single-line SRT, 1-3 words, no punctuation"
 echo "       - LAB37 Podcast  -- plain SRT, full sentences"
 echo "       - LAB37 Auto     -- auto-detect language, plain SRT"
+echo "       - LAB37 Check    -- pre-flight check (run after install/Resolve update)"
 echo "    4. Captions auto-import in ~10s for short clips"
 echo ""
 echo "  Captions also saved to: ~/Desktop/Captions/"

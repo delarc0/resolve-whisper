@@ -51,7 +51,20 @@ Most people won't need to change anything. If transcription quality is bad, try 
 
 ---
 
+## Health check
+
+Run this once after install and after any DaVinci Resolve update:
+
+**From Resolve:** Workspace > Scripts > **LAB37 Check**
+**Or terminal:** `./.venv/bin/python caption.py --check`
+
+It validates the Python environment, ffmpeg, the Resolve connection, and the
+`Audio Only` render preset (creating it if missing). Output goes to
+`/tmp/resolve_whisper_check.log` when launched from Resolve.
+
 ## Troubleshooting
+
+Run **LAB37 Check** first — it catches almost everything below automatically.
 
 **Script doesn't appear in Workspace > Scripts**
 Re-run `setup.bat` / `setup.sh`. It copies the script to Resolve's scripts folder.
@@ -67,6 +80,20 @@ Open `caption_config.json` and set `"language": "sv"` (or your language code) in
 
 **Nothing happens when I click the script**
 Make sure you have a timeline selected (not just a project open). The script needs an active timeline to work with.
+
+**"'Audio Only' render preset not found"**
+Run **LAB37 Check** — it'll create the preset for you. Or recreate it manually:
+`./.venv/bin/python create_audio_only_preset.py --force`
+
+**"'Audio Only' preset is misconfigured"**
+The preset was edited (probably exported as video by accident). Recreate it:
+`./.venv/bin/python create_audio_only_preset.py --force`
+
+**Render starts but never completes / log shows "Render timed out"**
+Check `/tmp/resolve_whisper.log`. If the render genuinely got stuck (not just slow), it usually means another job is queued and the render queue got confused. Open the Deliver page, clear stuck jobs, and run again.
+
+**Resolve scripts menu vanished after a Resolve update**
+Re-run setup so the Lua launchers get re-copied to the new Scripts folder, then run **LAB37 Check** to confirm.
 
 ---
 
