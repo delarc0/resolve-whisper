@@ -32,6 +32,17 @@ _NOBREAK_TRAILING = {
 }
 
 
+# Abbreviations ending in '.' that must NOT trigger a sentence break.
+# Lowercased, exact match on the full word.
+_ABBREVIATIONS = {
+    # Swedish
+    "t.ex.", "bl.a.", "m.m.", "osv.", "dvs.", "d.v.s.", "p.g.a.", "s.k.",
+    "fr.o.m.", "t.o.m.", "ca.", "st.", "kr.", "nr.", "tel.", "kl.",
+    # English
+    "e.g.", "i.e.", "etc.", "vs.", "mr.", "mrs.", "dr.", "st.",
+}
+
+
 def _strip_trailing_punct(s: str) -> str:
     return s.rstrip(".,!?;:…")
 
@@ -120,7 +131,13 @@ def words_to_captions(segments: list, fps: float = 24.0) -> list:
     if not all_words:
         return []
 
-    emphasized = _mark_emphasized(all_words)
+    # Emphasis-solo (held / isolated words land on their own caption) is a
+    # Reels-mode feature. In plain-SRT mode (max_words=0) we want full
+    # sentences, not solo words just because the speaker drew them out.
+    if max_words > 0:
+        emphasized = _mark_emphasized(all_words)
+    else:
+        emphasized = [False] * len(all_words)
 
     # Group words into caption blocks
     captions = []
@@ -156,8 +173,10 @@ def words_to_captions(segments: list, fps: float = 24.0) -> list:
 
         # Tiered pause handling: a hard pause always breaks; a smaller pause
         # only breaks once the caption has been on screen long enough that
-        # the viewer needs a refresh. This stops the chunker from greedily
-        # filling to max_words on every line.
+        # the viewer needs a refresh. The micro-pause rule is Reels-only
+        # (max_words > 0) -- in plain-SRT mode (max_words=0) we want the
+        # chunker to fill captions up to the char/line limit instead of
+        # fragmenting on every breath.
         if block_words:
             block_dur_so_far = block_words[-1].end - block_words[0].start
         else:
@@ -166,14 +185,19 @@ def words_to_captions(segments: list, fps: float = 24.0) -> list:
         # >0.18s pause = clear breath pause -> always break
         hard_pause = block_words and pause > 0.18
         # any micro-pause (>0.06s) breaks if caption has been up for ~0.6s+
-        micro_pause = block_words and pause > 0.06 and block_dur_so_far > 0.6
+        micro_pause = (
+            max_words > 0
+            and block_words and pause > 0.06 and block_dur_so_far > 0.6
+        )
         natural_break = hard_pause or micro_pause
 
         # Sentence-ending punctuation always breaks (. ! ?). Soft punctuation
         # (, ; :) still needs a >0.2s pause since Whisper puts those unreliably.
+        # Abbreviations ("t.ex.", "bl.a.") end in '.' without ending a sentence.
         if block_words:
             prev = block_words[-1].text.rstrip()
-            hard_punct = prev.endswith((".", "!", "?"))
+            is_abbrev = prev.lower() in _ABBREVIATIONS
+            hard_punct = prev.endswith((".", "!", "?")) and not is_abbrev
             soft_punct = prev.endswith((",", ";", ":")) and pause > 0.2
             punct_break = hard_punct or soft_punct
         else:
@@ -230,6 +254,11 @@ def words_to_captions(segments: list, fps: float = 24.0) -> list:
             "text": block_text,
         })
 
+    # Whisper word timestamps are occasionally non-monotonic; sort so the
+    # overlap clamp below can never see a "next" caption that starts before
+    # this one (which would clamp end below start).
+    captions.sort(key=lambda c: c["start"])
+
     # Enforce minimum duration and add gaps
     for i, cap in enumerate(captions):
         dur = cap["end"] - cap["start"]
@@ -244,13 +273,29 @@ def words_to_captions(segments: list, fps: float = 24.0) -> list:
             # Hard clamp: never exceed next caption's start
             if cap["end"] > next_start:
                 cap["end"] = next_start
+        # Never emit start >= end -- zero/negative durations make some
+        # importers reject the whole file. A 50ms sliver beats a dead SRT.
+        if cap["end"] <= cap["start"]:
+            cap["end"] = cap["start"] + 0.05
 
     return captions
 
 
 def strip_punct_text(text: str) -> str:
+    """Remove sentence punctuation but keep word-internal characters.
+
+    A bare [^\\w\\s] delete corrupts words: "don't" -> "dont", "e-post" ->
+    "epost", "Wi-Fi" -> "WiFi". Keep apostrophes and hyphens inside words,
+    then trim leading/trailing punctuation per word.
+    """
     import re
-    return re.sub(r" +", " ", re.sub(r"[^\w\s]", "", text, flags=re.UNICODE)).strip()
+    # En/em dashes separate words ("går—nu"); deleting them would merge.
+    text = re.sub(r"[–—]", " ", text)
+    # Drop everything except word chars, whitespace, apostrophes, hyphens.
+    text = re.sub(r"[^\w\s'’\-]", "", text, flags=re.UNICODE)
+    # Trim the keepers when they sit at word edges ("'hello-" -> "hello").
+    words = [w.strip("'’-") for w in text.split()]
+    return " ".join(w for w in words if w)
 
 
 def words_to_srt(segments: list, fps: float = 24.0, strip_punctuation: bool = False) -> str:

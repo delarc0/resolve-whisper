@@ -47,6 +47,7 @@ class ProgressUI:
         self.last_mtime = 0.0
         self.last_seen = time.time()
         self._closing = False
+        self._cancelling = False
 
         self.root = tk.Tk()
         self.root.title("LAB37 Resolve Whisper")
@@ -121,6 +122,12 @@ class ProgressUI:
         progress = status.get("progress", -1)
         message = status.get("message", "")
 
+        # While cancelling, ignore non-terminal updates: the estimator
+        # thread keeps writing "transcribing" until the SIGTERM lands, which
+        # would overwrite our "Cancelling..." and make Cancel look ignored.
+        if self._cancelling and stage not in ("done", "error"):
+            return
+
         title = _STAGE_TITLES.get(stage, stage.replace("_", " ").title() or "Working...")
         self.title_label.config(text=title)
         self.detail_label.config(text=message)
@@ -170,6 +177,7 @@ class ProgressUI:
         except (OSError, json.JSONDecodeError):
             pid = None
 
+        self._cancelling = True
         self.title_label.config(text="Cancelling...")
         self.detail_label.config(text="Stopping render and cleaning up.")
         self.cancel_button.config(state="disabled")

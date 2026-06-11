@@ -4,6 +4,16 @@ local PRESET_ARGS = "--check"
 
 print("[LAB37 Check] Starting...")
 
+local RESOLVE_API = "/Library/Application Support/Blackmagic Design/DaVinci Resolve/Developer/Scripting"
+local RESOLVE_LIB = "/Applications/DaVinci Resolve/DaVinci Resolve.app/Contents/Libraries/Fusion/fusionscript.so"
+
+local lf = io.open(RESOLVE_LIB, "r")
+if lf then lf:close() else
+    print("[LAB37 Check] ERROR: fusionscript.so not found at: " .. RESOLVE_LIB)
+    print("[LAB37 Check] Is Resolve installed in a nonstandard location?")
+    return
+end
+
 local script_dir = debug.getinfo(1, "S").source:sub(2):match("(.*/)") or "./"
 local pointer = script_dir .. "resolve_whisper_path.txt"
 print("[LAB37 Check] Looking for pointer at: " .. pointer)
@@ -27,8 +37,7 @@ local cmd = string.format(
     [[export RESOLVE_SCRIPT_LIB=%q; ]] ..
     [[export PYTHONPATH="$RESOLVE_SCRIPT_API/Modules"; ]] ..
     [[cd %q && %q %q %s) > %q 2>&1 &]],
-    "/Library/Application Support/Blackmagic Design/DaVinci Resolve/Developer/Scripting",
-    "/Applications/DaVinci Resolve/DaVinci Resolve.app/Contents/Libraries/Fusion/fusionscript.so",
+    RESOLVE_API, RESOLVE_LIB,
     app_dir, python, caption, PRESET_ARGS, log_path
 )
 

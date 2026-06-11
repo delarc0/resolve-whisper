@@ -14,8 +14,9 @@ log = logging.getLogger(__name__)
 # Filler words to strip (Swedish + English)
 # Note: "typ" removed -- it is a real Swedish word ("type/kind of")
 # Note: "you know" removed -- fullmatch on single words can never match it
+# Note: "oh" removed -- it carries meaning in English ("Oh no", "Oh really?")
 FILLER_WORDS = re.compile(
-    r"(um|uh|uhm|hmm|ah|eh|oh|"
+    r"(um|uh|uhm|hmm|ah|eh|"
     r"liksom|asså|alltså|öh|äh)",
     re.IGNORECASE,
 )
@@ -29,6 +30,14 @@ HALLUCINATIONS = {
     "tack för att du tittade",
     "undertextning",
 }
+
+# Only treat a HALLUCINATIONS match as fake when word confidence is ALSO low.
+# A genuinely spoken closing "Thank you." carries high word probabilities;
+# silence-hallucinated text does not. Without this gate, real speech that
+# happens to match the list is silently deleted -- and on Mac the VAD
+# pre-pass already removes the silence that breeds hallucinations, so a
+# surviving match is more likely real than fake.
+_HALLUCINATION_MAX_AVG_PROB = 0.5
 
 
 @dataclass
@@ -65,14 +74,30 @@ def clean_word(text: str) -> str:
     return stripped
 
 
-def is_hallucination(text: str) -> bool:
-    """Check if a full segment is a known hallucination."""
+def is_hallucination(text: str, avg_word_probability: float = 0.0) -> bool:
+    """Check if a full segment is a known hallucination.
+
+    Matches the known-phrase list AND requires low word confidence
+    (avg_word_probability <= _HALLUCINATION_MAX_AVG_PROB). Callers that have
+    no word probabilities can pass 0.0 to keep the old text-only behavior.
+    """
     lower = text.lower().strip().strip(".,!?;:…")
-    return lower in HALLUCINATIONS
+    if lower not in HALLUCINATIONS:
+        return False
+    return avg_word_probability <= _HALLUCINATION_MAX_AVG_PROB
+
+
+def _avg_probability(probs) -> float:
+    """Mean of an iterable of probabilities; 0.0 when empty/unavailable."""
+    probs = [p for p in probs if p is not None]
+    if not probs:
+        return 0.0
+    return sum(probs) / len(probs)
 
 
 class Transcriber:
     def __init__(self):
+        self._vad = None
         if _config.IS_MAC:
             import mlx_whisper
             self._mlx = mlx_whisper
@@ -90,6 +115,18 @@ class Transcriber:
             except Exception as e:
                 log.error(f"MLX model warm-up failed: {e}")
                 raise
+
+            # Load silero-vad (ONNX). Used to find speech regions before
+            # transcription -- mlx_whisper's word timestamps drift after long
+            # pauses, so feeding only continuous speech eliminates the
+            # clustered/zero-duration timestamp bug entirely.
+            try:
+                from silero_vad import load_silero_vad
+                self._vad = load_silero_vad(onnx=True)
+                log.info("VAD (silero-vad ONNX) loaded.")
+            except Exception as e:
+                log.warning(f"VAD model load failed: {e}; falling back to whole-file transcription.")
+                self._vad = None
         else:
             from faster_whisper import WhisperModel
             self._mlx = None
@@ -180,20 +217,29 @@ class Transcriber:
                 except Exception:
                     pass
 
-            if is_hallucination(seg.text):
+            seg_avg_prob = _avg_probability(
+                w.probability for w in (seg.words or [])
+            )
+            if is_hallucination(seg.text, seg_avg_prob):
+                log.debug(f"Dropping hallucination (avg prob {seg_avg_prob:.2f}): {seg.text!r}")
                 continue
 
+            min_prob = float(cfg.get("min_word_probability", 0.0) or 0.0)
             words = []
             if seg.words:
                 for w in seg.words:
                     cleaned = clean_word(w.word)
-                    if cleaned:
-                        words.append(Word(
-                            text=cleaned,
-                            start=w.start,
-                            end=w.end,
-                            probability=w.probability,
-                        ))
+                    if not cleaned:
+                        continue
+                    if min_prob > 0 and w.probability < min_prob:
+                        log.debug(f"Drop low-confidence word ({w.probability:.2f}): {cleaned!r}")
+                        continue
+                    words.append(Word(
+                        text=cleaned,
+                        start=w.start,
+                        end=w.end,
+                        probability=w.probability,
+                    ))
 
             if words:
                 text = " ".join(w.text for w in words)
@@ -212,15 +258,128 @@ class Transcriber:
             pass
         return segments
 
+    @staticmethod
+    def _load_mono_16k(audio_path: str):
+        """Read audio in 30-second blocks, downmix to mono, resample to 16kHz.
+
+        Block-wise loading keeps peak memory bounded by one block at the
+        source sample rate (~10MB at 48kHz stereo) instead of materialising
+        the whole file twice (raw + resampled). Important for hour-long
+        interviews on 16GB machines.
+        """
+        import soundfile as sf
+        import numpy as np
+
+        info = sf.info(audio_path)
+        sr = info.samplerate
+        target_sr = 16000
+        block = sr * 30
+        ratio = target_sr / float(sr) if sr != target_sr else 1.0
+
+        chunks = []
+        with sf.SoundFile(audio_path, "r") as f:
+            while True:
+                data = f.read(block, dtype="float32")
+                if data.size == 0:
+                    break
+                if data.ndim > 1:
+                    data = data.mean(axis=1)
+                if sr != target_sr:
+                    new_len = int(round(len(data) * ratio))
+                    if new_len == 0:
+                        # Sub-sample-length tail block: appending it raw would
+                        # inject source-rate samples into a 16kHz stream and
+                        # shift every later VAD timestamp. Drop it (<1ms).
+                        continue
+                    xp = np.arange(len(data), dtype=np.float32)
+                    x = np.linspace(0, len(data), num=new_len, endpoint=False, dtype=np.float32)
+                    data = np.interp(x, xp, data).astype(np.float32)
+                chunks.append(data)
+
+        if not chunks:
+            return np.array([], dtype=np.float32)
+        return np.concatenate(chunks)
+
+    def get_audio_duration(self, audio_path: str) -> float:
+        """Return audio duration in seconds, or 0.0 on failure."""
+        try:
+            import soundfile as sf
+            info = sf.info(audio_path)
+            return info.frames / float(info.samplerate) if info.samplerate else 0.0
+        except Exception:
+            return 0.0
+
+    def _vad_clip_timestamps(self, audio_path: str):
+        """Run silero-vad on the audio and return mlx_whisper clip_timestamps.
+
+        Returns a flat list [s1, e1, s2, e2, ...] (seconds) covering only the
+        speech regions. Returns the string "0" if VAD is unavailable, finds
+        no speech, or anything fails -- mlx_whisper interprets that as
+        "transcribe the whole file" so we degrade gracefully.
+        """
+        if self._vad is None:
+            return "0"
+        try:
+            from silero_vad import get_speech_timestamps
+
+            audio = self._load_mono_16k(audio_path)
+            if audio.size == 0:
+                log.warning("Empty audio buffer for VAD; using whole file.")
+                return "0"
+
+            speech = get_speech_timestamps(
+                audio, self._vad,
+                return_seconds=True,
+                # 200ms padding so we don't clip word starts/ends. silero's
+                # 30ms default is too tight for caption-grade word timing.
+                speech_pad_ms=200,
+                # Keep VAD greedy on speech; a missed region means a word
+                # never gets transcribed at all, which is worse than including
+                # a borderline-quiet region.
+                threshold=0.4,
+                min_silence_duration_ms=300,
+            )
+
+            if not speech:
+                log.warning("VAD found no speech regions; using whole file.")
+                return "0"
+
+            total_speech = sum(s["end"] - s["start"] for s in speech)
+            log.info(
+                f"VAD: {len(speech)} speech regions, {total_speech:.1f}s "
+                f"(of {len(audio)/16000:.1f}s audio)"
+            )
+
+            flat = []
+            for s in speech:
+                flat.append(round(float(s["start"]), 2))
+                flat.append(round(float(s["end"]), 2))
+            return flat
+        except Exception as e:
+            log.warning(f"VAD pre-pass failed ({e}); using whole file.")
+            return "0"
+
     def _transcribe_mlx(self, audio_path: str, on_progress=None) -> list:
         # mlx_whisper handles decoding via ffmpeg when given a path string,
         # which covers MP4/MOV/WAV/etc. without us needing soundfile+resampy.
-        result = self._mlx.transcribe(
-            audio_path,
+        clip_timestamps = self._vad_clip_timestamps(audio_path)
+        kwargs = dict(
             path_or_hf_repo=_config.MODEL_SIZE,
             language=cfg["language"],
             word_timestamps=True,
+            # Each VAD clip is a continuous speech burst, so we don't want
+            # the decoder carrying state across clips -- it can hallucinate
+            # filler/repeats. Whole-file fallback also benefits from this
+            # because long pauses are exactly where condition_on_previous_text
+            # introduces drift.
+            condition_on_previous_text=False,
+            clip_timestamps=clip_timestamps,
         )
+        # initial_prompt is supported by mlx_whisper too; beam_size is not
+        # (mlx decodes greedily), so that config key is Windows-only.
+        if cfg.get("initial_prompt"):
+            kwargs["initial_prompt"] = cfg["initial_prompt"]
+        result = self._mlx.transcribe(audio_path, **kwargs)
 
         if cfg["language"] is None and result.get("language"):
             log.info(f"Detected language: {result['language']}")
@@ -230,19 +389,38 @@ class Transcriber:
         raw_segs = result.get("segments", [])
         for seg in raw_segs:
             seg_text = seg.get("text", "").strip()
-            if is_hallucination(seg_text):
+            raw_words = seg.get("words", []) or []
+            seg_avg_prob = _avg_probability(w.get("probability") for w in raw_words)
+            if is_hallucination(seg_text, seg_avg_prob):
+                log.debug(f"Dropping hallucination (avg prob {seg_avg_prob:.2f}): {seg_text!r}")
                 continue
 
+            min_prob = float(cfg.get("min_word_probability", 0.0) or 0.0)
             words = []
-            for w in seg.get("words", []):
+            for w in raw_words:
                 cleaned = clean_word(w.get("word", "") or w.get("text", ""))
-                if cleaned:
-                    words.append(Word(
-                        text=cleaned,
-                        start=w.get("start", 0.0),
-                        end=w.get("end", 0.0),
-                        probability=w.get("probability", 1.0),
-                    ))
+                if not cleaned:
+                    continue
+                # No `or 1.0` here: a genuine 0.0 probability must stay 0.0,
+                # only a MISSING key defaults to 1.0 (assume good faith).
+                prob = w.get("probability")
+                prob = 1.0 if prob is None else float(prob)
+                if min_prob > 0 and prob < min_prob:
+                    log.debug(f"Drop low-confidence word ({prob:.2f}): {cleaned!r}")
+                    continue
+                start = w.get("start")
+                end = w.get("end")
+                if start is None or end is None:
+                    # A word with no timing would land at t=0 and corrupt
+                    # ordering. Malformed and rare: drop it, loudly.
+                    log.warning(f"Word missing timestamps, dropping: {cleaned!r}")
+                    continue
+                words.append(Word(
+                    text=cleaned,
+                    start=float(start),
+                    end=float(end),
+                    probability=prob,
+                ))
 
             if words:
                 text = " ".join(w.text for w in words)

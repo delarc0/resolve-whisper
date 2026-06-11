@@ -308,7 +308,8 @@ def open_file_selected(file_path):
 
 _PRESETS = {
     "Podcast 16:9": {"max_words": 0, "max_chars": 42, "max_lines": 1},
-    "Reels":        {"max_words": 1, "max_chars": 32, "max_lines": 1},
+    # Kept aligned with the Mac preset (presets/LAB37 Reels.lua)
+    "Reels":        {"max_words": 3, "max_chars": 22, "max_lines": 1},
     "Custom":       None,
 }
 _PRESET_NAMES = list(_PRESETS.keys())
@@ -1253,7 +1254,10 @@ def main():
 
         output_dir = os.path.join(os.path.expanduser("~"), "Desktop", "Captions")
         os.makedirs(output_dir, exist_ok=True)
-        srt_path = os.path.join(output_dir, f"{safe_name}.srt")
+        # Per-run timestamp so Resolve treats each import as a fresh media
+        # item (same convention as the Mac path in caption.py).
+        run_stamp = time.strftime("%Y%m%d-%H%M%S")
+        srt_path = os.path.join(output_dir, f"{safe_name} {run_stamp}.srt")
 
         cmd = [
             VENV_PYTHON,
@@ -1264,6 +1268,9 @@ def main():
             "--max-words", str(max_words),
             "--max-chars", str(max_chars),
             "--max-lines", str(max_lines),
+            # We already drive our own progress window; without this the
+            # caption.py subprocess spawns a second one.
+            "--no-ui",
         ]
         if language:
             cmd.extend(["--language", language])

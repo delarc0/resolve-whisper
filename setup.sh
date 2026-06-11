@@ -61,9 +61,10 @@ fi
 
 echo "  [2/4] Installing dependencies..."
 "$APP_DIR/.venv/bin/pip" install --quiet --upgrade pip
-"$APP_DIR/.venv/bin/pip" install --quiet mlx mlx-whisper soundfile resampy numpy
+# Single source of truth for deps is requirements-mac.txt
+"$APP_DIR/.venv/bin/pip" install --quiet -r "$APP_DIR/requirements-mac.txt"
 
-"$APP_DIR/.venv/bin/python3" -c "import mlx_whisper" || {
+"$APP_DIR/.venv/bin/python3" -c "import mlx_whisper, silero_vad" || {
     echo "  ERROR: Dependencies failed to install."
     exit 1
 }
@@ -78,9 +79,9 @@ RESOLVE_SCRIPTS="$HOME/Library/Application Support/Blackmagic Design/DaVinci Res
 
 echo "  [3/4] Installing Lua launchers to Resolve..."
 mkdir -p "$RESOLVE_SCRIPTS"
-# Shared launcher invoked by every preset (underscore-prefixed so it sorts
-# above the LAB37 entries in the Scripts menu and reads as internal)
-cp "$APP_DIR/launcher.lua" "$RESOLVE_SCRIPTS/_launcher.lua"
+# Clean up the legacy shared launcher (presets are self-contained now; the
+# old _launcher.lua only added a junk menu entry)
+rm -f "$RESOLVE_SCRIPTS/_launcher.lua"
 # Preset menu entries: one per common workflow
 cp "$APP_DIR/presets/LAB37 Reels.lua"   "$RESOLVE_SCRIPTS/"
 cp "$APP_DIR/presets/LAB37 Podcast.lua" "$RESOLVE_SCRIPTS/"
@@ -110,9 +111,10 @@ echo "       - LAB37 Reels    -- single-line SRT, 1-3 words, no punctuation"
 echo "       - LAB37 Podcast  -- plain SRT, full sentences"
 echo "       - LAB37 Auto     -- auto-detect language, plain SRT"
 echo "       - LAB37 Check    -- pre-flight check (run after install/Resolve update)"
-echo "    4. Captions auto-import in ~10s for short clips"
+echo "    4. When the progress window finishes, the Captions folder opens"
+echo "    5. Drag the .srt from Finder onto a subtitle track in your timeline"
 echo ""
-echo "  Captions also saved to: ~/Desktop/Captions/"
+echo "  Captions are saved to: ~/Desktop/Captions/ (auto-cleaned after 30 days)"
 echo "  Live progress log:      /tmp/resolve_whisper.log"
 echo ""
 echo "  LAB37 TOOLS // lab37.se"

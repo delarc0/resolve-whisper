@@ -29,6 +29,45 @@ class TestValidateAudioOnlySettings(unittest.TestCase):
             [],
         )
 
+    def test_resolve21_is_prefixed_keys_pass(self):
+        # Resolve 21 renamed job-dict keys: ExportVideo -> IsExportVideo etc.
+        self.assertEqual(
+            _validate_audio_only_settings({
+                "IsExportVideo": False,
+                "IsExportAudio": True,
+                "AudioCodec": "lpcm",
+            }),
+            [],
+        )
+
+    def test_resolve21_is_prefixed_video_true_fails(self):
+        problems = _validate_audio_only_settings({
+            "IsExportVideo": True,
+            "IsExportAudio": True,
+        })
+        self.assertEqual(len(problems), 1)
+        self.assertIn("IsExportVideo", problems[0])
+
+    def test_resolve21_is_prefixed_audio_false_fails(self):
+        problems = _validate_audio_only_settings({
+            "IsExportVideo": False,
+            "IsExportAudio": False,
+        })
+        self.assertEqual(len(problems), 1)
+        self.assertIn("IsExportAudio", problems[0])
+
+    def test_resolve21_output_filename_used_first(self):
+        # Resolve 21 job dicts carry OutputFilename; it should win over probing.
+        with tempfile.TemporaryDirectory() as d:
+            target = os.path.join(d, "Timeline 1.wav")
+            with open(target, "w") as f:
+                f.write("x")
+            path = _expected_output_path(
+                {"TargetDir": d, "OutputFilename": "Timeline 1.wav"},
+                d, "fallback",
+            )
+            self.assertEqual(path, target)
+
     def test_export_video_true_fails(self):
         problems = _validate_audio_only_settings({
             "ExportVideo": True,

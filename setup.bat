@@ -75,7 +75,8 @@ echo         CUDA torch installed OK.
 
 :torch_done
 
-"%APP_DIR%\.venv\Scripts\python.exe" -m pip install --quiet faster-whisper numpy
+:: Single source of truth for non-torch deps is requirements.txt
+"%APP_DIR%\.venv\Scripts\python.exe" -m pip install --quiet -r "%APP_DIR%\requirements.txt"
 
 :: Verify install
 "%APP_DIR%\.venv\Scripts\python.exe" -c "import faster_whisper; print('  faster-whisper OK')"

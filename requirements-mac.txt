@@ -2,5 +2,8 @@
 mlx>=0.5.0
 mlx-whisper>=0.3.0
 soundfile
-resampy
 numpy
+# VAD pre-pass: prevents Whisper word-timestamp drift after long pauses.
+# silero-vad's torch dep is unavoidable but we use the ONNX backend at runtime.
+silero-vad
+onnxruntime

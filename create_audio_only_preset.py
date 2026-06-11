@@ -12,7 +12,19 @@ and inspecting its settings.
 """
 import argparse
 import logging
+import os
 import sys
+import tempfile
+
+# Shared helpers live in caption.py (same dir). Resolve's Lua launcher cds
+# here before invoking us, but belt-and-braces for manual runs from elsewhere.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from caption import (  # noqa: E402
+    _safe,
+    _set_wav_format_compat,
+    _validate_audio_only_settings,
+    _restore_deliver_state,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s",
                     datefmt="%H:%M:%S")
@@ -33,6 +45,8 @@ def _validate(project) -> list:
     try:
         if not project.LoadRenderPreset(PRESET_NAME):
             return [f"LoadRenderPreset('{PRESET_NAME}') failed"]
+        # Resolve 21: AddRenderJob returns no id unless a target dir is set.
+        _safe(project.SetRenderSettings, {"TargetDir": tempfile.gettempdir()})
         probe_id = project.AddRenderJob()
         if not probe_id:
             return ["AddRenderJob (probe) returned no id"]
@@ -42,18 +56,9 @@ def _validate(project) -> list:
             if isinstance(j, dict) and j.get("JobId") == probe_id:
                 job_settings = j
                 break
-
-        problems = []
         if not isinstance(job_settings, dict) or not job_settings:
             return ["could not read probe job settings"]
-        # ExportVideo MUST be falsey
-        ev = job_settings.get("ExportVideo")
-        if ev not in (False, 0, "0", "false", "False", None):
-            problems.append(f"ExportVideo is {ev!r}, want false")
-        ea = job_settings.get("ExportAudio")
-        if ea not in (True, 1, "1", "true", "True", None):
-            problems.append(f"ExportAudio is {ea!r}, want true")
-        return problems
+        return _validate_audio_only_settings(job_settings)
     finally:
         if probe_id and probe_id not in pre_ids:
             try:
@@ -64,40 +69,29 @@ def _validate(project) -> list:
 
 def _create(project) -> int:
     """Create the preset. Caller must have ensured it doesn't already exist."""
-    log.info("Snapshotting current render format/codec...")
-    saved_fmt = project.GetCurrentRenderFormatAndCodec() or {}
+    log.info("Configuring audio-only WAV/PCM...")
+    pair = _set_wav_format_compat(project)
+    if not pair:
+        log.error("Could not switch to WAV: all known format/codec ids failed.")
+        return 1
+    log.info(f"WAV format set via format/codec: {pair[0]}/{pair[1] or '(default)'}")
 
-    try:
-        log.info("Configuring audio-only WAV/PCM...")
-        if not project.SetCurrentRenderFormatAndCodec("wav", "LinearPCM"):
-            log.error("SetCurrentRenderFormatAndCodec failed (wav/LinearPCM).")
-            return 1
+    settings = {
+        "ExportVideo": False,
+        "ExportAudio": True,
+        "AudioBitDepth": 24,
+        "AudioSampleRate": 48000,
+    }
+    if pair[1]:
+        settings["AudioCodec"] = pair[1]
+    if not project.SetRenderSettings(settings):
+        log.warning("SetRenderSettings returned falsy; continuing anyway.")
 
-        ok = project.SetRenderSettings({
-            "ExportVideo": False,
-            "ExportAudio": True,
-            "AudioCodec": "LinearPCM",
-            "AudioBitDepth": 24,
-            "AudioSampleRate": 48000,
-        })
-        if not ok:
-            log.warning("SetRenderSettings returned falsy; continuing anyway.")
-
-        log.info(f"Saving preset '{PRESET_NAME}'...")
-        if not project.SaveAsNewRenderPreset(PRESET_NAME):
-            log.error("SaveAsNewRenderPreset failed.")
-            return 1
-        log.info(f"Preset '{PRESET_NAME}' created.")
-    finally:
-        log.info("Restoring previous render format/codec...")
-        if isinstance(saved_fmt, dict):
-            fmt = saved_fmt.get("format")
-            codec = saved_fmt.get("codec")
-            if fmt and codec:
-                try:
-                    project.SetCurrentRenderFormatAndCodec(fmt, codec)
-                except Exception:
-                    pass
+    log.info(f"Saving preset '{PRESET_NAME}'...")
+    if not project.SaveAsNewRenderPreset(PRESET_NAME):
+        log.error("SaveAsNewRenderPreset failed.")
+        return 1
+    log.info(f"Preset '{PRESET_NAME}' created.")
     return 0
 
 
@@ -127,42 +121,49 @@ def main():
         log.error("No project open.")
         return 1
 
-    existing = project.GetRenderPresetList() or []
-    already_exists = PRESET_NAME in existing
+    # Snapshot the Deliver page so the user isn't left stuck on Audio Only
+    # (or our temp TargetDir) after we probe/create.
+    saved_fmt = _safe(project.GetCurrentRenderFormatAndCodec, _default={}) or {}
+    saved_mode = _safe(project.GetCurrentRenderMode)
+    try:
+        existing = project.GetRenderPresetList() or []
+        already_exists = PRESET_NAME in existing
 
-    if already_exists and args.force:
-        log.info(f"--force given, deleting '{PRESET_NAME}'...")
-        try:
-            ok = project.DeleteRenderPreset(PRESET_NAME)
-            if not ok:
-                log.error(f"DeleteRenderPreset('{PRESET_NAME}') returned falsy.")
+        if already_exists and args.force:
+            log.info(f"--force given, deleting '{PRESET_NAME}'...")
+            try:
+                ok = project.DeleteRenderPreset(PRESET_NAME)
+                if not ok:
+                    log.error(f"DeleteRenderPreset('{PRESET_NAME}') returned falsy.")
+                    return 1
+            except Exception as e:
+                log.error(f"DeleteRenderPreset failed: {e}")
                 return 1
-        except Exception as e:
-            log.error(f"DeleteRenderPreset failed: {e}")
-            return 1
-        already_exists = False
+            already_exists = False
 
-    if already_exists:
-        log.info(f"'{PRESET_NAME}' exists; validating...")
+        if already_exists:
+            log.info(f"'{PRESET_NAME}' exists; validating...")
+            problems = _validate(project)
+            if problems:
+                log.error(f"Existing preset is misconfigured: {'; '.join(problems)}")
+                log.error("Re-run with --force to recreate it.")
+                return 1
+            log.info(f"Validated: '{PRESET_NAME}' is correctly configured.")
+            return 0
+
+        rc = _create(project)
+        if rc != 0:
+            return rc
+
+        log.info("Validating new preset...")
         problems = _validate(project)
         if problems:
-            log.error(f"Existing preset is misconfigured: {'; '.join(problems)}")
-            log.error("Re-run with --force to recreate it.")
+            log.error(f"Newly-created preset is misconfigured: {'; '.join(problems)}")
             return 1
-        log.info(f"Validated: '{PRESET_NAME}' is correctly configured.")
+        log.info("Done. Preset created and validated.")
         return 0
-
-    rc = _create(project)
-    if rc != 0:
-        return rc
-
-    log.info("Validating new preset...")
-    problems = _validate(project)
-    if problems:
-        log.error(f"Newly-created preset is misconfigured: {'; '.join(problems)}")
-        return 1
-    log.info("Done. Preset created and validated.")
-    return 0
+    finally:
+        _restore_deliver_state(project, saved_fmt, saved_mode)
 
 
 if __name__ == "__main__":

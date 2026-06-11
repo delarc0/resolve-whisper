@@ -145,6 +145,38 @@ class TestWordsToCaptions(unittest.TestCase):
         caps = words_to_captions([seg(words)], fps=25.0)
         self.assertEqual(len(caps), 1)
 
+    def test_emphasis_solo_disabled_in_plain_srt_mode(self):
+        # max_words=0 (Auto/Podcast presets): a long-held word ("Stockholms"
+        # 0.52s) should NOT force its own caption. In Reels mode it would,
+        # but plain SRT wants full sentences.
+        from srt import cfg
+        cfg["max_words_per_caption"] = 0
+        cfg["max_chars_per_line"] = 100
+        words = [
+            W("hotell", 6.00, 6.40),
+            W("är", 6.48, 6.60),
+            W("Stockholms", 6.98, 7.50),  # 0.52s -- would be "emphasized"
+            W("mest", 7.58, 7.70),
+        ]
+        caps = words_to_captions([seg(words)], fps=25.0)
+        self.assertEqual(len(caps), 1)
+        self.assertIn("Stockholms", caps[0]["text"])
+
+    def test_micro_pause_ignored_in_plain_srt_mode(self):
+        # max_words=0 (Auto/Podcast presets): micro-pauses should NOT fragment
+        # captions. The chunker should fill up to char/line limit instead.
+        from srt import cfg
+        cfg["max_words_per_caption"] = 0
+        cfg["max_chars_per_line"] = 100  # remove char pressure
+        words = [
+            W("a", 0.00, 0.10), W("b", 0.11, 0.20), W("c", 0.21, 0.30),
+            W("d", 0.31, 0.70),                          # block now 0.7s long
+            W("e", 0.79, 0.85),                          # 0.09s micro-pause
+        ]
+        caps = words_to_captions([seg(words)], fps=25.0)
+        # In plain-SRT mode the micro-pause should be ignored.
+        self.assertEqual(len(caps), 1)
+
     def test_hard_pause_always_breaks(self):
         # >0.18s pause splits regardless of block age, when neither word is
         # in the connector list ("ja" / "nej" are content words in Swedish)

@@ -5,9 +5,7 @@ import sys
 
 log = logging.getLogger(__name__)
 
-IS_WIN = sys.platform == "win32"
 IS_MAC = sys.platform == "darwin"
-IS_LINUX = sys.platform.startswith("linux")
 
 _APP_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(_APP_DIR, "caption_config.json")
@@ -15,8 +13,13 @@ CONFIG_PATH = os.path.join(_APP_DIR, "caption_config.json")
 DEFAULT_CONFIG = {
     # Transcription
     "language": "sv",           # None = auto-detect, "sv" = Swedish, "en" = English
-    "beam_size": 10,            # Higher = more accurate (5 is default, 10 recommended for GPU)
-    "initial_prompt": None,     # Swedish context hint, e.g. "Intervju om ledarskap och projektledning."
+    "beam_size": 10,            # Windows/faster-whisper only; mlx (Mac) decodes greedily
+    "initial_prompt": None,     # Context hint, e.g. "Intervju om ledarskap och projektledning."
+    # Drop words below this Whisper confidence. 0.0 = off (default): Whisper
+    # gives real-but-mumbled words low scores, and deleting a mid-sentence
+    # word silently corrupts the caption. Set ~0.3 only on noisy footage
+    # where junk words actually appear.
+    "min_word_probability": 0.0,
     # SRT formatting
     "max_words_per_caption": 0,      # 0 = no limit (use chars/lines), >0 = hard word cap
     "max_chars_per_line": 42,        # 42 = broadcast standard (EBU/Netflix) for 16:9
@@ -26,10 +29,28 @@ DEFAULT_CONFIG = {
     "gap_frames": 2,            # gap between subtitles in frames
     # Output
     "output_dir": None,         # None = same dir as source / project
+    "keep_srt_days": 30,        # auto-delete SRTs older than this in output dir; 0 disables
 }
 
 
+def _write_default_config():
+    """Write DEFAULT_CONFIG to CONFIG_PATH so users can discover the knobs.
+
+    Only writes if CONFIG_PATH doesn't exist; never overwrites a user-edited
+    file. Failures are non-fatal -- defaults still apply in-memory.
+    """
+    if os.path.exists(CONFIG_PATH):
+        return
+    try:
+        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+            json.dump(DEFAULT_CONFIG, f, indent=2, ensure_ascii=False)
+            f.write("\n")
+    except OSError as e:
+        log.debug(f"Could not write default config: {e}")
+
+
 def load_config() -> dict:
+    _write_default_config()
     config = dict(DEFAULT_CONFIG)
     if os.path.exists(CONFIG_PATH):
         try:

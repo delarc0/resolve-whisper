@@ -25,6 +25,167 @@ log = logging.getLogger(__name__)
 
 
 STATUS_FILE = os.path.join(tempfile.gettempdir(), "resolve_whisper_status.json")
+LOCK_FILE = os.path.join(tempfile.gettempdir(), "resolve_whisper.lock")
+
+
+def _acquire_run_lock() -> bool:
+    """Claim the single-run lock or report another run is in progress.
+
+    Atomic: O_CREAT|O_EXCL closes the check-then-write race between two
+    near-simultaneous launches. A stale lock (recorded PID dead) is removed
+    and acquisition retried once. PermissionError from the liveness probe
+    means the PID exists under another user -> treat as alive.
+    """
+    for _attempt in (1, 2):
+        try:
+            fd = os.open(LOCK_FILE, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(str(os.getpid()))
+            return True
+        except FileExistsError:
+            if sys.platform == "win32":
+                # os.kill(pid, 0) TERMINATES the target on Windows, so probe
+                # by lock age instead: runs never legitimately exceed 2h.
+                try:
+                    age = time.time() - os.path.getmtime(LOCK_FILE)
+                except OSError:
+                    continue  # lock vanished between open and stat; retry
+                if age < 7200:
+                    log.error("Another caption run appears to be in progress. Wait for it to finish.")
+                    return False
+                try:
+                    os.unlink(LOCK_FILE)
+                except OSError:
+                    pass
+                continue
+            try:
+                with open(LOCK_FILE, "r", encoding="utf-8") as f:
+                    other_pid = int(f.read().strip())
+                os.kill(other_pid, 0)  # signal 0 == probe; raises if not alive
+                log.error(f"Another caption run is in progress (pid {other_pid}). Wait for it to finish or cancel it.")
+                return False
+            except PermissionError:
+                # Process exists under another user: definitely alive.
+                log.error("Another caption run is in progress (different user). Wait for it to finish.")
+                return False
+            except (ValueError, ProcessLookupError, OSError):
+                # Stale or garbage lock: remove it and retry the atomic open.
+                try:
+                    os.unlink(LOCK_FILE)
+                except OSError:
+                    pass
+                continue
+        except OSError as e:
+            log.warning(f"Could not create lock file ({e}); proceeding without lock.")
+            return True
+    return False
+
+
+def _release_run_lock():
+    """Release the run lock if we own it. Best-effort; never raises."""
+    try:
+        with open(LOCK_FILE, "r", encoding="utf-8") as f:
+            owner = int(f.read().strip())
+        if owner == os.getpid():
+            os.unlink(LOCK_FILE)
+    except (OSError, ValueError):
+        pass
+
+
+# Our SRTs end in " YYYYMMDD-HHMMSS.srt" (see run_resolve_mode). The cleanup
+# must only ever touch files matching this stamp -- output_dir is
+# user-configurable and can contain hand-edited or delivered SRTs.
+_OWN_SRT_RE = None  # compiled lazily; module-level re import kept minimal
+
+
+def _is_own_srt(name: str) -> bool:
+    global _OWN_SRT_RE
+    if _OWN_SRT_RE is None:
+        import re
+        _OWN_SRT_RE = re.compile(r" \d{8}-\d{6}\.srt$", re.IGNORECASE)
+    return bool(_OWN_SRT_RE.search(name))
+
+
+def _cleanup_old_srts(output_dir: str, keep_days: int):
+    """Delete OUR old .srt files in output_dir. Non-fatal.
+
+    Only files matching the tool's own " YYYYMMDD-HHMMSS.srt" stamp are
+    candidates; foreign SRTs in a shared folder are never touched.
+    """
+    if keep_days <= 0 or not os.path.isdir(output_dir):
+        return
+    cutoff = time.time() - keep_days * 86400
+    removed = 0
+    try:
+        for name in os.listdir(output_dir):
+            if not _is_own_srt(name):
+                continue
+            path = os.path.join(output_dir, name)
+            try:
+                if os.path.getmtime(path) < cutoff:
+                    os.unlink(path)
+                    removed += 1
+            except OSError:
+                pass
+    except OSError as e:
+        log.debug(f"Could not list output dir for cleanup: {e}")
+        return
+    if removed:
+        log.info(f"Cleaned up {removed} SRT file(s) older than {keep_days} days.")
+
+
+def _start_progress_estimator(audio_duration_s: float):
+    """Run a background thread that fakes a progress percentage based on
+    elapsed time vs an estimated transcription duration.
+
+    mlx_whisper.transcribe() blocks without progress callbacks on Mac, so
+    the UI would otherwise sit on 0% for minutes on long files. The
+    estimate is rough -- M5 Pro hits ~5x real-time on large-v3 -- but it's
+    enough to show the bar moving. Caps at 95% so the real completion
+    callback gets to write 100%.
+
+    Returns (stop_event, thread) so the caller can stop and join it.
+    """
+    import threading
+
+    stop = threading.Event()
+    # Conservative 4x real-time so the bar advances at most as fast as the
+    # actual transcription -- better to under-promise than to sit on 95%
+    # while transcription drags on.
+    expected = max(audio_duration_s / 4.0, 1.0)
+
+    def _run():
+        t0 = time.time()
+        while not stop.is_set():
+            elapsed = time.time() - t0
+            pct = int(min(elapsed / expected * 95.0, 95.0))
+            _write_status("transcribing", f"~{pct}% complete", progress=pct)
+            if stop.wait(0.5):
+                return
+
+    th = threading.Thread(target=_run, daemon=True)
+    th.start()
+    return stop, th
+
+
+def _start_heartbeat(stage: str, message: str):
+    """Re-write the same status every 5s so the UI's stale-file detector
+    (90s) doesn't close the window during long blocking calls -- the
+    first-run model download inside Transcriber() can take many minutes.
+
+    Returns (stop_event, thread); call stop.set() + thread.join() when done.
+    """
+    import threading
+
+    stop = threading.Event()
+
+    def _run():
+        while not stop.wait(5.0):
+            _write_status(stage, message)
+
+    th = threading.Thread(target=_run, daemon=True)
+    th.start()
+    return stop, th
 
 
 def _write_status(stage: str, message: str = "", progress: int = -1):
@@ -32,9 +193,14 @@ def _write_status(stage: str, message: str = "", progress: int = -1):
 
     Best-effort: never raises. The UI is a separate process polling this file.
     PID is included so the UI's Cancel button can deliver SIGTERM to us.
+    Atomic (tmp + os.replace): the estimator thread and the main thread both
+    write here, and the UI's Cancel handler reads it -- a half-written file
+    must never be observable, or Cancel silently no-ops.
     """
+    import threading
+    tmp_path = f"{STATUS_FILE}.{os.getpid()}.{threading.get_ident()}.tmp"
     try:
-        with open(STATUS_FILE, "w", encoding="utf-8") as f:
+        with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump({
                 "stage": stage,
                 "progress": progress,
@@ -42,8 +208,13 @@ def _write_status(stage: str, message: str = "", progress: int = -1):
                 "ts": time.time(),
                 "pid": os.getpid(),
             }, f)
+        os.replace(tmp_path, STATUS_FILE)
     except Exception as e:
         log.debug(f"status write failed: {e}")
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
 
 
 def _install_cancel_signal():
@@ -200,10 +371,14 @@ def _validate_audio_only_settings(settings: dict) -> list:
     def _is_truthy(v):
         return v in (True, 1, "1", "true", "True")
 
-    if "ExportVideo" in settings and not _is_falsey(settings["ExportVideo"]):
-        problems.append(f"ExportVideo is {settings['ExportVideo']!r}, want false")
-    if "ExportAudio" in settings and not _is_truthy(settings["ExportAudio"]):
-        problems.append(f"ExportAudio is {settings['ExportAudio']!r}, want true")
+    # Resolve 21 renamed the job-dict keys: ExportVideo -> IsExportVideo,
+    # ExportAudio -> IsExportAudio. Check whichever spelling is present.
+    video_key = next((k for k in ("ExportVideo", "IsExportVideo") if k in settings), None)
+    audio_key = next((k for k in ("ExportAudio", "IsExportAudio") if k in settings), None)
+    if video_key and not _is_falsey(settings[video_key]):
+        problems.append(f"{video_key} is {settings[video_key]!r}, want false")
+    if audio_key and not _is_truthy(settings[audio_key]):
+        problems.append(f"{audio_key} is {settings[audio_key]!r}, want true")
 
     # Audio container: Resolve reports audio format under different keys
     # depending on version. We just look for evidence of WAV / PCM.
@@ -220,6 +395,12 @@ def _expected_output_path(job_settings: dict, output_dir: str, fallback_name: st
     """Compute the expected rendered file path from a job's settings."""
     target_dir = job_settings.get("TargetDir") or output_dir
     custom_name = job_settings.get("CustomName") or fallback_name
+    # Resolve 21 exposes the exact output filename on the job; trust it first.
+    out_name = job_settings.get("OutputFilename")
+    if out_name:
+        candidate = os.path.join(target_dir, out_name)
+        if os.path.exists(candidate):
+            return candidate
     # Resolve appends the extension based on format. We probe extensions
     # rather than try to predict from the format string.
     for ext in _AUDIO_EXTS:
@@ -250,6 +431,31 @@ def _delete_job_if_ours(project, job_id: str, pre_existing_ids: set):
         log.warning(f"Refusing to delete job {job_id}: was already in queue.")
         return
     _safe(project.DeleteRenderJob, job_id)
+
+
+# Format/codec ids for a WAV audio-only setup, in preference order.
+# Resolve 21 dropped the 'LinearPCM' codec id (GetRenderCodecs('wav') returns
+# {} and job dicts report 'lpcm'); Resolve 18-20 want 'LinearPCM'.
+_WAV_FORMAT_CANDIDATES = (
+    ("wav", "LinearPCM"),   # Resolve 18-20
+    ("wav", "lpcm"),        # Resolve 21 job-dict codec id
+    ("wav", ""),            # Resolve 21: audio formats expose no codec list
+    ("Wave", "LinearPCM"),  # display-name spelling, defensive
+    ("Wave", "lpcm"),
+    ("Wave", ""),
+)
+
+
+def _set_wav_format_compat(project):
+    """Switch the Deliver page to WAV across Resolve versions.
+
+    Tries each known format/codec id pair until one sticks. Returns the
+    (format, codec) pair that worked, or None if every candidate failed.
+    """
+    for fmt, codec in _WAV_FORMAT_CANDIDATES:
+        if _safe(project.SetCurrentRenderFormatAndCodec, fmt, codec):
+            return (fmt, codec)
+    return None
 
 
 def _restore_deliver_state(project, saved_fmt: dict, saved_mode):
@@ -368,9 +574,24 @@ def render_audio(project, timeline, output_dir: str) -> str:
 
         start = time.time()
         last_pct = -1
-        terminal = {"Complete", "Failed", "Cancelled"}
+        empty_polls = 0
         while time.time() - start < _RENDER_TIMEOUT_S:
             status = _safe(project.GetRenderJobStatus, job_id, _default={}) or {}
+
+            # Resolve quitting/crashing mid-render makes every API call
+            # return empty through _safe. Detect it instead of spinning
+            # silently for the full 30-minute timeout.
+            if not status:
+                empty_polls += 1
+                if empty_polls >= 20:  # ~10s of nothing back
+                    if not _safe(project.GetName):
+                        log.error("Lost connection to Resolve (did it quit?). Aborting.")
+                        _write_status("error", "Lost connection to Resolve.")
+                        return None
+                    empty_polls = 0  # project still alive; transient blips
+            else:
+                empty_polls = 0
+
             job_status = status.get("JobStatus", "")
             pct = status.get("CompletionPercentage", 0)
             try:
@@ -380,6 +601,9 @@ def render_audio(project, timeline, output_dir: str) -> str:
             if pct_int != last_pct and pct_int % 10 == 0:
                 log.info(f"  render {pct_int}%")
                 last_pct = pct_int
+            # Heartbeat every poll: long renders otherwise trip the UI's
+            # 90s stale-file auto-close, taking the Cancel button with it.
+            _write_status("rendering_audio", f"Rendering... {pct_int}%", progress=pct_int)
 
             if job_status == "Complete":
                 break
@@ -426,9 +650,11 @@ def run_resolve_mode(args):
     from transcribe import Transcriber
     from srt import write_srt
 
-    # Apply CLI overrides
+    # Apply CLI overrides. "--language auto" means explicit auto-detect
+    # (cfg language defaults to "sv", so the Auto preset must be able to
+    # override it back to None).
     if args.language:
-        cfg["language"] = args.language
+        cfg["language"] = None if args.language.lower() in ("auto", "none") else args.language
     if args.max_words is not None:
         cfg["max_words_per_caption"] = args.max_words
     if args.max_chars is not None:
@@ -444,32 +670,61 @@ def run_resolve_mode(args):
         _write_status("starting", "Connecting to Resolve...")
         resolve = get_resolve()
         if not resolve:
-            _write_status("error", "Could not connect to Resolve.")
+            _write_status("error", "Resolve isn't running. Open Resolve Studio and try again.")
             return 1
 
         project, timeline, fps = get_timeline_info(resolve)
+        if not project:
+            _write_status("error", "No project open in Resolve. Open a project first.")
+            return 1
         if not timeline:
-            _write_status("error", "No timeline open in Resolve.")
+            _write_status("error", "No timeline selected. Open a timeline and set in/out points.")
             return 1
 
         _write_status("rendering_audio", f"Timeline: {timeline.GetName()}")
         tmp_dir = tempfile.mkdtemp(prefix="resolve_whisper_")
         wav_path = render_audio(project, timeline, tmp_dir)
         if not wav_path:
-            _write_status("error", "Audio render failed; check log.")
+            _write_status(
+                "error",
+                "Audio render failed. Check in/out points and the 'Audio Only' preset (run LAB37 Check).",
+            )
             return 1
 
         _write_status("loading_model", "Warming up Whisper...")
         log.info("Loading Whisper model...")
         t0 = time.time()
-        transcriber = Transcriber()
+        # Heartbeat: the first-ever run downloads ~3GB inside Transcriber(),
+        # far beyond the UI's 90s stale-file auto-close.
+        hb_stop, hb_th = _start_heartbeat("loading_model", "Loading AI model (first run downloads ~3 GB)...")
+        try:
+            transcriber = Transcriber()
+        except Exception as e:
+            msg = str(e).lower()
+            if "huggingface" in msg or "connection" in msg or "no such file" in msg:
+                _write_status("error", "Model download failed. Check internet connection and retry.")
+            else:
+                _write_status("error", f"Whisper model failed to load: {e}")
+            return 1
+        finally:
+            hb_stop.set()
+            hb_th.join(timeout=1.0)
         load_time = time.time() - t0
         log.info(f"Model loaded in {load_time:.1f}s")
 
         _write_status("transcribing", "Listening to audio...", progress=0)
         log.info("Transcribing...")
 
+        # Background progress estimator: mlx_whisper.transcribe blocks without
+        # callbacks on Mac, so we fake-advance the bar based on elapsed time.
+        # On Windows faster_whisper still calls _on_progress for real updates.
+        audio_dur = transcriber.get_audio_duration(wav_path)
+        prog_stop, prog_th = _start_progress_estimator(audio_dur)
+
         def _on_progress(pct):
+            # Real progress from faster_whisper -- stop the estimator and use this.
+            if not prog_stop.is_set():
+                prog_stop.set()
             try:
                 pct_int = max(0, min(int(pct), 100))
             except (ValueError, TypeError):
@@ -477,7 +732,11 @@ def run_resolve_mode(args):
             _write_status("transcribing", f"{pct_int}% complete", progress=pct_int)
 
         t0 = time.time()
-        segments = transcriber.transcribe(wav_path, on_progress=_on_progress)
+        try:
+            segments = transcriber.transcribe(wav_path, on_progress=_on_progress)
+        finally:
+            prog_stop.set()
+            prog_th.join(timeout=1.0)
         tx_time = time.time() - t0
 
         word_count = sum(len(s.words) for s in segments)
@@ -485,7 +744,10 @@ def run_resolve_mode(args):
 
         if not segments:
             log.warning("No speech detected in timeline audio.")
-            _write_status("error", "No speech detected.")
+            _write_status(
+                "error",
+                "No speech detected. Check in/out points cover the spoken section, and audio is unmuted.",
+            )
             return 1
 
         strip_punct = getattr(args, "strip_punctuation", False)
@@ -494,10 +756,15 @@ def run_resolve_mode(args):
         if not output_dir:
             output_dir = os.path.join(os.path.expanduser("~"), "Desktop", "Captions")
         os.makedirs(output_dir, exist_ok=True)
+        _cleanup_old_srts(output_dir, int(cfg.get("keep_srt_days", 30) or 0))
 
         timeline_name = timeline.GetName()
         safe_name = "".join(c if c.isalnum() or c in " -_" else "_" for c in timeline_name)
-        srt_path = os.path.join(output_dir, f"{safe_name}.srt")
+        # Per-run timestamp suffix so Resolve treats each import as a fresh
+        # media item -- importing an SRT with a name Resolve has seen before
+        # will reuse the cached pool item and ignore the file changes.
+        run_stamp = time.strftime("%Y%m%d-%H%M%S")
+        srt_path = os.path.join(output_dir, f"{safe_name} {run_stamp}.srt")
 
         _write_status("writing_srt", "Writing captions to disk...")
         success = write_srt(segments, srt_path, fps, strip_punctuation=strip_punct)
@@ -560,7 +827,7 @@ def run_file_mode(args):
     from srt import write_srt, write_captions_json
 
     if args.language:
-        cfg["language"] = args.language
+        cfg["language"] = None if args.language.lower() in ("auto", "none") else args.language
     if args.max_words is not None:
         cfg["max_words_per_caption"] = args.max_words
     if args.max_chars is not None:
@@ -586,55 +853,92 @@ def run_file_mode(args):
     ui_proc = None if getattr(args, "no_ui", False) else _spawn_progress_ui()
     _install_cancel_signal()
 
-    _write_status("loading_model", "Warming up Whisper...")
-    log.info("Loading Whisper model...")
-    t0 = time.time()
-    transcriber = Transcriber()
-    load_time = time.time() - t0
-    log.info(f"Model loaded in {load_time:.1f}s")
-
-    def _on_progress(pct):
-        # Machine-readable line for resolve_script.py to parse, plus UI status.
-        print(f"PROGRESS:{pct}", flush=True)
+    # Same try/except/finally discipline as run_resolve_mode: a crash or a
+    # Cancel-induced KeyboardInterrupt must write a terminal status, or the
+    # progress window hangs until its 90s stale timeout.
+    try:
+        _write_status("loading_model", "Warming up Whisper...")
+        log.info("Loading Whisper model...")
+        t0 = time.time()
+        hb_stop, hb_th = _start_heartbeat("loading_model", "Loading AI model (first run downloads ~3 GB)...")
         try:
-            pct_int = max(0, min(int(pct), 100))
-        except (ValueError, TypeError):
-            return
-        _write_status("transcribing", f"{pct_int}% complete", progress=pct_int)
+            transcriber = Transcriber()
+        except Exception as e:
+            _write_status("error", f"Whisper model failed to load: {e}")
+            return 1
+        finally:
+            hb_stop.set()
+            hb_th.join(timeout=1.0)
+        load_time = time.time() - t0
+        log.info(f"Model loaded in {load_time:.1f}s")
 
-    _write_status("transcribing", "Listening to audio...", progress=0)
-    log.info("Transcribing...")
-    t0 = time.time()
-    segments = transcriber.transcribe(input_path, on_progress=_on_progress)
-    tx_time = time.time() - t0
+        audio_dur = transcriber.get_audio_duration(input_path)
+        prog_stop, prog_th = _start_progress_estimator(audio_dur)
 
-    word_count = sum(len(s.words) for s in segments)
-    log.info(f"Transcribed {word_count} words in {tx_time:.1f}s")
+        def _on_progress(pct):
+            if not prog_stop.is_set():
+                prog_stop.set()
+            # Machine-readable line for resolve_script.py to parse, plus UI status.
+            print(f"PROGRESS:{pct}", flush=True)
+            try:
+                pct_int = max(0, min(int(pct), 100))
+            except (ValueError, TypeError):
+                return
+            _write_status("transcribing", f"{pct_int}% complete", progress=pct_int)
 
-    if not segments:
-        log.warning("No speech detected.")
-        _write_status("error", "No speech detected.")
+        _write_status("transcribing", "Listening to audio...", progress=0)
+        log.info("Transcribing...")
+        t0 = time.time()
+        try:
+            segments = transcriber.transcribe(input_path, on_progress=_on_progress)
+        finally:
+            prog_stop.set()
+            prog_th.join(timeout=1.0)
+        tx_time = time.time() - t0
+
+        word_count = sum(len(s.words) for s in segments)
+        log.info(f"Transcribed {word_count} words in {tx_time:.1f}s")
+
+        if not segments:
+            log.warning("No speech detected.")
+            _write_status("error", "No speech detected.")
+            return 1
+
+        strip_punct = getattr(args, "strip_punctuation", False)
+
+        # Determine FPS (default 24 for standalone files)
+        fps = args.fps or 24.0
+
+        _write_status("writing_srt", "Writing captions to disk...")
+        success = write_srt(segments, srt_path, fps, strip_punctuation=strip_punct)
+        if not success:
+            _write_status("error", "SRT write failed.")
+            return 1
+
+        # Write JSON sidecar for Text+ insertion mode
+        json_path = os.path.splitext(srt_path)[0] + ".json"
+        write_captions_json(segments, json_path, fps, strip_punctuation=strip_punct)
+
+        log.info("")
+        log.info(f"SRT saved to: {srt_path}")
+        _write_status("done", os.path.basename(srt_path), progress=100)
+        return 0
+    except KeyboardInterrupt:
+        log.warning("Cancelled by user.")
+        _write_status("error", "Cancelled.")
         return 1
-
-    strip_punct = getattr(args, "strip_punctuation", False)
-
-    # Determine FPS (default 24 for standalone files)
-    fps = args.fps or 24.0
-
-    _write_status("writing_srt", "Writing captions to disk...")
-    success = write_srt(segments, srt_path, fps, strip_punctuation=strip_punct)
-    if not success:
-        _write_status("error", "SRT write failed.")
-        return 1
-
-    # Write JSON sidecar for Text+ insertion mode
-    json_path = os.path.splitext(srt_path)[0] + ".json"
-    write_captions_json(segments, json_path, fps, strip_punctuation=strip_punct)
-
-    log.info("")
-    log.info(f"SRT saved to: {srt_path}")
-    _write_status("done", os.path.basename(srt_path), progress=100)
-    return 0
+    except Exception as e:
+        _write_status("error", str(e))
+        raise
+    finally:
+        if ui_proc is not None and ui_proc.poll() is None:
+            try:
+                with open(STATUS_FILE, "r", encoding="utf-8") as f:
+                    cur = json.load(f)
+                if cur.get("stage") not in ("done", "error"):
+                    _write_status("error", "Pipeline ended unexpectedly.")
+            except Exception:
+                pass
 
 
 def run_check_mode(args):
@@ -682,6 +986,19 @@ def run_check_mode(args):
     ffmpeg_path = _sh.which("ffmpeg")
     _row("ffmpeg on PATH", bool(ffmpeg_path), ffmpeg_path or "install: brew install ffmpeg")
 
+    # 3a. silero-vad importable + ONNX model loads (Mac path needs this for
+    # accurate word timing; Windows uses faster-whisper's built-in VAD).
+    if sys.platform == "darwin":
+        try:
+            from silero_vad import load_silero_vad
+            m = load_silero_vad(onnx=True)
+            _row("silero-vad (ONNX) loadable", bool(m))
+        except Exception as e:
+            _row(
+                "silero-vad (ONNX) loadable", False,
+                f"{e} -- pip install silero-vad onnxruntime",
+            )
+
     # 4. Resolve scripting module
     try:
         import DaVinciResolveScript as _bmd  # noqa: F401
@@ -717,54 +1034,73 @@ def run_check_mode(args):
     except OSError as e:
         _row("Output dir writable", False, f"{output_dir}: {e}")
 
-    # 7. Audio Only preset present + valid (only meaningful with project)
+    # 7. Audio Only preset present + valid (only meaningful with project).
+    # Snapshot the Deliver page first: probing/creating loads the Audio Only
+    # preset, and the user shouldn't find their export page stuck on it.
     if project:
-        presets = project.GetRenderPresetList() or []
-        if _AUDIO_PRESET_NAME in presets:
-            _row("'Audio Only' preset exists", True)
-            # Validate its settings by adding a test job, inspecting, deleting
-            existing_jobs = project.GetRenderJobList() or []
-            pre_existing_ids = {j.get("JobId") for j in existing_jobs if isinstance(j, dict) and j.get("JobId")}
-            try:
+        saved_fmt = _safe(project.GetCurrentRenderFormatAndCodec, _default={}) or {}
+        saved_mode = _safe(project.GetCurrentRenderMode)
+        try:
+            presets = project.GetRenderPresetList() or []
+            if _AUDIO_PRESET_NAME in presets:
+                _row("'Audio Only' preset exists", True)
+                # Validate its settings by adding a test job, inspecting, deleting
+                existing_jobs = project.GetRenderJobList() or []
+                pre_existing_ids = {j.get("JobId") for j in existing_jobs if isinstance(j, dict) and j.get("JobId")}
                 project.LoadRenderPreset(_AUDIO_PRESET_NAME)
-                test_job_id = project.AddRenderJob()
-                if test_job_id:
-                    job_settings = {}
-                    for j in (project.GetRenderJobList() or []):
-                        if isinstance(j, dict) and j.get("JobId") == test_job_id:
-                            job_settings = j
-                            break
-                    problems = _validate_audio_only_settings(job_settings)
-                    if problems:
-                        _row("'Audio Only' preset settings", False, "; ".join(problems))
-                        warnings.append("Recreate preset: rerun --check with --force")
+                # Resolve 21: AddRenderJob returns no id unless a target dir
+                # is set. Use the temp dir; we delete the probe job anyway.
+                _safe(project.SetRenderSettings, {"TargetDir": tempfile.gettempdir()})
+                test_job_id = None
+                try:
+                    test_job_id = project.AddRenderJob()
+                    if test_job_id:
+                        job_settings = {}
+                        for j in (project.GetRenderJobList() or []):
+                            if isinstance(j, dict) and j.get("JobId") == test_job_id:
+                                job_settings = j
+                                break
+                        problems = _validate_audio_only_settings(job_settings)
+                        if problems:
+                            _row("'Audio Only' preset settings", False, "; ".join(problems))
+                            warnings.append(
+                                "Recreate the preset: ./.venv/bin/python create_audio_only_preset.py --force"
+                            )
+                        else:
+                            _row("'Audio Only' preset settings", True)
                     else:
-                        _row("'Audio Only' preset settings", True)
+                        _row("'Audio Only' preset settings", False, "AddRenderJob returned no id")
+                finally:
+                    # Delete the probe even if validation raises, or it
+                    # leaks into the user's render queue.
                     _delete_job_if_ours(project, test_job_id, pre_existing_ids)
-                else:
-                    _row("'Audio Only' preset settings", False, "AddRenderJob returned no id")
-            finally:
-                project.LoadRenderPreset(_AUDIO_PRESET_NAME)
-        else:
-            log.info(f"  [....] 'Audio Only' preset not found, attempting to create...")
-            try:
-                # Inline minimal create logic
-                if not project.SetCurrentRenderFormatAndCodec("wav", "LinearPCM"):
-                    _row("Create 'Audio Only' preset", False, "SetCurrentRenderFormatAndCodec failed")
-                else:
-                    project.SetRenderSettings({
-                        "ExportVideo": False,
-                        "ExportAudio": True,
-                        "AudioCodec": "LinearPCM",
-                        "AudioBitDepth": 24,
-                        "AudioSampleRate": 48000,
-                    })
-                    if project.SaveAsNewRenderPreset(_AUDIO_PRESET_NAME):
-                        _row("Create 'Audio Only' preset", True)
+            else:
+                log.info(f"  [....] 'Audio Only' preset not found, attempting to create...")
+                try:
+                    pair = _set_wav_format_compat(project)
+                    if not pair:
+                        _row(
+                            "Create 'Audio Only' preset", False,
+                            "could not switch Deliver page to WAV (all known format/codec ids failed)",
+                        )
                     else:
-                        _row("Create 'Audio Only' preset", False, "SaveAsNewRenderPreset failed")
-            except Exception as e:
-                _row("Create 'Audio Only' preset", False, str(e))
+                        settings = {
+                            "ExportVideo": False,
+                            "ExportAudio": True,
+                            "AudioBitDepth": 24,
+                            "AudioSampleRate": 48000,
+                        }
+                        if pair[1]:
+                            settings["AudioCodec"] = pair[1]
+                        project.SetRenderSettings(settings)
+                        if project.SaveAsNewRenderPreset(_AUDIO_PRESET_NAME):
+                            _row("Create 'Audio Only' preset", True, f"format/codec: {pair[0]}/{pair[1] or '(default)'}")
+                        else:
+                            _row("Create 'Audio Only' preset", False, "SaveAsNewRenderPreset failed")
+                except Exception as e:
+                    _row("Create 'Audio Only' preset", False, str(e))
+        finally:
+            _restore_deliver_state(project, saved_fmt, saved_mode)
 
     log.info("")
     if failures:
@@ -865,12 +1201,24 @@ Examples:
 
     args = parser.parse_args()
 
-    if args.check:
-        return run_check_mode(args)
-    if args.file:
-        return run_file_mode(args)
-    else:
-        return run_resolve_mode(args)
+    # Everything that touches Resolve's Deliver page or the status file is
+    # exclusive -- including --check, which loads presets and adds probe
+    # jobs and would race a live caption run.
+    if not _acquire_run_lock():
+        # Do NOT write the shared status file here: the only reader is the
+        # WINNING run's progress window, and an "error" status would make it
+        # show a false failure and auto-close, killing its Cancel button.
+        log.error("Another caption run is in progress. Wait for it or cancel it from its progress window.")
+        return 1
+    try:
+        if args.check:
+            return run_check_mode(args)
+        if args.file:
+            return run_file_mode(args)
+        else:
+            return run_resolve_mode(args)
+    finally:
+        _release_run_lock()
 
 
 if __name__ == "__main__":
