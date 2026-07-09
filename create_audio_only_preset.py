@@ -73,6 +73,9 @@ def _create(project) -> int:
     pair = _set_wav_format_compat(project)
     if not pair:
         log.error("Could not switch to WAV: all known format/codec ids failed.")
+        log.error("Note: Resolve 21 removed audio formats from SetCurrentRenderFormatAndCodec")
+        log.error("but ships 'Audio Only' as a factory preset, so creation shouldn't be")
+        log.error("needed there. Check the Deliver page's preset list.")
         return 1
     log.info(f"WAV format set via format/codec: {pair[0]}/{pair[1] or '(default)'}")
 

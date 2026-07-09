@@ -1079,9 +1079,16 @@ def run_check_mode(args):
                 try:
                     pair = _set_wav_format_compat(project)
                     if not pair:
+                        # Resolve 21 removed audio formats from
+                        # SetCurrentRenderFormatAndCodec entirely, but it also
+                        # ships 'Audio Only' as a factory preset, so this
+                        # branch (preset missing AND can't create) should be
+                        # unreachable there. Reaching it means something odd.
                         _row(
                             "Create 'Audio Only' preset", False,
-                            "could not switch Deliver page to WAV (all known format/codec ids failed)",
+                            "could not switch Deliver page to WAV. On Resolve 21 "
+                            "'Audio Only' is a factory preset and should already exist; "
+                            "check the Deliver page's preset list.",
                         )
                     else:
                         settings = {
