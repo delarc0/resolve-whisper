@@ -779,11 +779,34 @@ def run_resolve_mode(args):
         except Exception as e:
             log.debug(f"OpenPage('edit') failed: {e}")
 
+        # Import the SRT into the Media Pool so nobody has to drag it in
+        # from Finder -- Resolve 21.0.2 can segfault in its drag handler
+        # (dragEnterEvent) when an external file is dragged onto a
+        # collaboration-locked timeline. From the pool, right-click >
+        # 'Insert Selected Subtitles to Timeline' is drag-free. The API
+        # cannot place subtitles on a track itself (verified: every
+        # AppendToTimeline form returns None for Subtitle items), so the
+        # right-click step stays manual. We pre-create the subtitle track
+        # so the insert action has somewhere to land.
+        imported_to_pool = False
+        media_pool = _safe(project.GetMediaPool)
+        if media_pool:
+            pool_items = _safe(media_pool.ImportMedia, [srt_path])
+            imported_to_pool = bool(pool_items)
+        if imported_to_pool and _safe(timeline.GetTrackCount, "subtitle") == 0:
+            _safe(timeline.AddTrack, "subtitle")
+
         log.info("")
         log.info(f"SRT saved to: {srt_path}")
-        log.info("Drag from Finder onto a subtitle track in your timeline.")
-        _open_folder(output_dir)
-        _write_status("done", os.path.basename(srt_path), progress=100)
+        if imported_to_pool:
+            log.info("SRT imported into the Media Pool.")
+            log.info("In Resolve: right-click it > Insert Selected Subtitles to Timeline.")
+            log.info("(Avoid dragging SRTs from Finder -- Resolve 21.0.2 can crash on that.)")
+            _write_status("done", "In Media Pool: right-click > Insert Selected Subtitles", progress=100)
+        else:
+            log.info("Drag from Finder onto a subtitle track in your timeline.")
+            _open_folder(output_dir)
+            _write_status("done", os.path.basename(srt_path), progress=100)
         return 0
     except KeyboardInterrupt:
         log.warning("Cancelled by user.")

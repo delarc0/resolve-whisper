@@ -33,8 +33,13 @@ Setup installs everything and adds the scripts to Resolve automatically.
    - **LAB37 Podcast** - plain Swedish SRT, full sentences
    - **LAB37 Auto** - auto-detect language, plain SRT
    - **LAB37 Check** - health check, run after install or a Resolve update
-4. Wait for the progress window to finish; the Captions folder opens
-5. Drag the `.srt` from Finder onto a subtitle track in your timeline
+4. Wait for the progress window to finish — the SRT is imported into the
+   Media Pool automatically (and a subtitle track is created if needed)
+5. In the Media Pool: right-click the SRT > **Insert Selected Subtitles to Timeline**
+
+Don't drag SRT files from Finder onto the timeline — Resolve 21.0.2 has a
+crash bug in its drag handler (worst on collaboration projects with locked
+timelines). The Media Pool right-click route is drag-free and safe.
 
 ### Windows
 
@@ -96,6 +101,13 @@ Use the **LAB37 Auto** preset (auto-detects), or set `"language"` in `caption_co
 
 **Nothing happens when I click the script**
 Make sure you have a timeline selected (not just a project open). The script needs an active timeline to work with.
+
+**Resolve crashes when dragging the SRT into the timeline**
+Known Resolve 21.0.2 bug (segfault in the drag handler, especially on cloud
+collaboration projects where another machine holds timeline locks). Don't
+drag from Finder. The tool imports the SRT into the Media Pool for you:
+right-click it there > **Insert Selected Subtitles to Timeline**. Also make
+sure no collaborator has the timeline open so you hold the lock.
 
 **"Another caption run is in progress"**
 A previous run is still working (or its progress window is open). Wait for it
