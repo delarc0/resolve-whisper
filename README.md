@@ -8,6 +8,16 @@ Built by LAB37 // lab37.se
 
 ## Install (one time)
 
+### With an AI assistant (recommended for non-technical users)
+
+If you have Claude (or another AI assistant that can run commands on your
+Mac), paste this and let it do the work:
+
+> Please install the LAB37 Resolve Whisper caption tool on this Mac.
+> Clone https://github.com/delarc0/resolve-whisper and follow the runbook in
+> AGENT_INSTALL.md exactly. I'm not technical, so do everything you can
+> yourself and guide me in simple steps when you need me.
+
 ### Windows
 1. Make sure Python 3.10+ is installed ([python.org](https://python.org) - check "Add to PATH")
 2. Double-click **`setup.bat`**
