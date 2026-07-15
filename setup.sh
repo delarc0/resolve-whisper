@@ -79,9 +79,15 @@ RESOLVE_SCRIPTS="$HOME/Library/Application Support/Blackmagic Design/DaVinci Res
 
 echo "  [3/4] Installing Lua launchers to Resolve..."
 mkdir -p "$RESOLVE_SCRIPTS"
-# Clean up the legacy shared launcher (presets are self-contained now; the
-# old _launcher.lua only added a junk menu entry)
+# Clean up legacy installs:
+# - _launcher.lua: old shared launcher, junk menu entry (presets are
+#   self-contained now)
+# - Utility/LAB37 Resolve Whisper.py: the original in-process stub. It runs
+#   Tkinter dialogs INSIDE Resolve via fuscript, which freezes Resolve on
+#   macOS. Hidden on Resolve 20 (Utility menu bug) but Resolve 21 shows it
+#   again, so it must go or users click the wrong entry.
 rm -f "$RESOLVE_SCRIPTS/_launcher.lua"
+rm -f "$HOME/Library/Application Support/Blackmagic Design/DaVinci Resolve/Fusion/Scripts/Utility/LAB37 Resolve Whisper.py"
 # Preset menu entries: one per common workflow
 cp "$APP_DIR/presets/LAB37 Reels.lua"   "$RESOLVE_SCRIPTS/"
 cp "$APP_DIR/presets/LAB37 Podcast.lua" "$RESOLVE_SCRIPTS/"
