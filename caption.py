@@ -261,6 +261,40 @@ def _spawn_progress_ui():
         return None
 
 
+def _run_settings_dialog():
+    """Show the Custom settings dialog (settings_ui.py subprocess).
+
+    Returns the chosen settings dict, or None if the user cancelled or the
+    dialog could not run. Blocks until the user decides; runs BEFORE the run
+    lock is taken so an open dialog never blocks other caption runs.
+    """
+    dialog_script = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "settings_ui.py")
+    if not os.path.exists(dialog_script):
+        log.error("settings_ui.py missing - reinstall (run setup.sh).")
+        return None
+    try:
+        proc = subprocess.run(
+            [sys.executable, dialog_script],
+            capture_output=True, text=True,
+        )
+    except Exception as e:
+        log.error(f"Could not open the settings dialog: {e}")
+        return None
+    if proc.returncode == 1:
+        log.info("Cancelled from the settings dialog.")
+        return None
+    for line in proc.stdout.splitlines():
+        if line.startswith("SETTINGS:"):
+            try:
+                return json.loads(line[len("SETTINGS:"):])
+            except json.JSONDecodeError:
+                break
+    log.error("Settings dialog failed (no settings returned). "
+              f"stderr: {proc.stderr.strip()[:200]}")
+    return None
+
+
 def get_resolve():
     """Connect to a running DaVinci Resolve Studio instance."""
     try:
@@ -1243,8 +1277,27 @@ Examples:
         action="store_true",
         help="Don't spawn the floating progress window.",
     )
+    parser.add_argument(
+        "--dialog",
+        action="store_true",
+        help="Open the settings dialog first (the LAB37 Custom preset). "
+             "Chosen settings override config and are remembered.",
+    )
 
     args = parser.parse_args()
+
+    if args.dialog:
+        from config import cfg
+        settings = _run_settings_dialog()
+        if settings is None:
+            return 0
+        args.language = str(settings.get("language", "auto"))
+        args.max_words = int(settings.get("max_words", 0))
+        args.max_chars = int(settings.get("max_chars", 42))
+        if settings.get("strip_punctuation"):
+            args.strip_punctuation = True
+        cfg["uppercase"] = bool(settings.get("uppercase", True))
+        log.info(f"Custom settings: {settings}")
 
     # Everything that touches Resolve's Deliver page or the status file is
     # exclusive -- including --check, which loads presets and adds probe

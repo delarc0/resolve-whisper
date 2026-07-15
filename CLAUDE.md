@@ -26,6 +26,13 @@ assisting non-technical users. Human-facing instructions live in README.md.
   fragments
 - `progress_ui.py` - Tk progress window; talks to caption.py via an atomic
   JSON status file; Cancel delivers SIGTERM
+- `settings_ui.py` - settings dialog for the Custom preset (caption.py
+  --dialog spawns it); persists last-used choices to custom_settings.json,
+  returns them via a SETTINGS: JSON line on stdout
+- `ui_theme.py` - shared Tk theme: apps/DESIGN.md charcoal tokens plus
+  Aqua-safe widgets (macOS ignores colors on native tk.Button/OptionMenu,
+  so buttons/selects/toggles are Label/Frame-based). Verify UI changes with
+  screenshots; Aqua renders wrong silently
 - `config.py` - defaults + `caption_config.json` generation
 
 Mac-only. The old Windows path (resolve_script.py + launcher_stub.py +

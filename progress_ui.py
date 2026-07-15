@@ -4,6 +4,10 @@ Polls a JSON status file every 200ms; updates the title, message, and progress
 bar; auto-closes on stage='done' or stage='error'. Designed to be spawned
 as a subprocess so it doesn't block the transcription pipeline.
 
+Styled per apps/DESIGN.md (LAB37 charcoal shell) via ui_theme. The progress
+bar is Frame-based: native ttk.Progressbar renders Aqua blue and ignores
+styling on macOS.
+
 Usage:
     python progress_ui.py /tmp/resolve_whisper_status.json
 """
@@ -16,10 +20,11 @@ import tempfile
 
 try:
     import tkinter as tk
-    from tkinter import ttk
 except ImportError:
     sys.stderr.write("tkinter not available; UI disabled.\n")
     sys.exit(0)
+
+import ui_theme as th
 
 
 DEFAULT_STATUS_FILE = os.path.join(tempfile.gettempdir(), "resolve_whisper_status.json")
@@ -36,6 +41,47 @@ _STAGE_TITLES = {
 }
 
 
+class _Bar:
+    """Flat determinate/indeterminate progress bar built from Frames."""
+
+    SWEEP_W = 0.28          # indeterminate segment width (fraction)
+    SWEEP_STEP = 0.018      # per tick
+    TICK_MS = 30
+
+    def __init__(self, parent, height=6):
+        self.track = tk.Frame(parent, bg=th.INPUT, height=height)
+        self.track.pack(fill="x")
+        self.fill = tk.Frame(self.track, bg=th.FG)
+        self.fill.place(x=0, y=0, relheight=1.0, relwidth=0.0)
+        self._anim = None
+        self._pos = -self.SWEEP_W
+
+    def set(self, pct, color=None):
+        self._stop_anim()
+        self.fill.config(bg=color or th.FG)
+        self.fill.place_configure(relx=0.0,
+                                  relwidth=max(0.0, min(pct, 100)) / 100.0)
+
+    def indeterminate(self):
+        if self._anim is None:
+            self.fill.config(bg=th.FG)
+            self._tick()
+
+    def _tick(self):
+        self._pos += self.SWEEP_STEP
+        if self._pos > 1.0:
+            self._pos = -self.SWEEP_W
+        relx = max(0.0, self._pos)
+        relw = min(self._pos + self.SWEEP_W, 1.0) - relx
+        self.fill.place_configure(relx=relx, relwidth=max(relw, 0.0))
+        self._anim = self.track.after(self.TICK_MS, self._tick)
+
+    def _stop_anim(self):
+        if self._anim is not None:
+            self.track.after_cancel(self._anim)
+            self._anim = None
+
+
 class ProgressUI:
     POLL_INTERVAL_MS = 200
     STALE_AFTER_S = 90  # auto-close if status file goes silent for 90s
@@ -50,44 +96,49 @@ class ProgressUI:
         self._cancelling = False
 
         self.root = tk.Tk()
-        self.root.title("LAB37 Resolve Whisper")
-        self.root.geometry("440x170")
+        self.root.title("LAB37 TOOLS: Whisper")
+        self.root.configure(bg=th.BG)
         self.root.resizable(False, False)
         try:
             self.root.attributes("-topmost", True)
         except tk.TclError:
             pass
+        th.edge_light(self.root)
 
-        # Center on screen
-        self.root.update_idletasks()
-        sw, sh = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
-        x = (sw - 440) // 2
-        y = (sh - 170) // 3  # upper third feels less intrusive than dead-center
-        self.root.geometry(f"440x170+{x}+{y}")
-
-        frame = ttk.Frame(self.root, padding=18)
+        frame = tk.Frame(self.root, bg=th.BG, padx=28, pady=20)
         frame.pack(fill="both", expand=True)
 
-        self.title_label = ttk.Label(
-            frame, text="Connecting to Resolve...", font=("Helvetica", 14, "bold")
-        )
-        self.title_label.pack(anchor="w")
+        tk.Label(frame, text=th.BRAND, font=(th.FONT_MONO, 9),
+                 fg=th.MUTED, bg=th.BG).pack(anchor="w")
 
-        self.detail_label = ttk.Label(frame, text="", font=("Helvetica", 11))
-        self.detail_label.pack(anchor="w", pady=(2, 12))
+        self.title_label = tk.Label(
+            frame, text="Connecting to Resolve...",
+            font=(th.FONT_UI, 13, "bold"), fg=th.FG, bg=th.BG)
+        self.title_label.pack(anchor="w", pady=(6, 0))
 
-        self.progress = ttk.Progressbar(frame, length=400, mode="indeterminate")
-        self.progress.pack(fill="x")
-        self.progress.start(12)
+        self.detail_label = tk.Label(
+            frame, text="", font=(th.FONT_UI, 10), fg=th.MUTED, bg=th.BG,
+            wraplength=384, justify="left")
+        self.detail_label.pack(anchor="w", pady=(2, 14))
+
+        bar_holder = tk.Frame(frame, bg=th.BG, width=384)
+        bar_holder.pack(fill="x")
+        self.bar = _Bar(bar_holder)
+        self.bar.indeterminate()
         self._mode = "indeterminate"
 
-        button_row = ttk.Frame(frame)
-        button_row.pack(fill="x", pady=(12, 0))
-        self.cancel_button = ttk.Button(button_row, text="Cancel", command=self._on_cancel)
+        button_row = tk.Frame(frame, bg=th.BG)
+        button_row.pack(fill="x", pady=(16, 0))
+        self.cancel_button = th.make_button(
+            button_row, "Cancel", "secondary", self._on_cancel)
         self.cancel_button.pack(side="right")
 
         # Closing the window via the red X also cancels.
         self.root.protocol("WM_DELETE_WINDOW", self._on_cancel)
+
+        self.root.update_idletasks()
+        self.root.minsize(440, self.root.winfo_reqheight())
+        th.place_window(self.root)
 
         # Schedule first poll
         self.root.after(self.POLL_INTERVAL_MS, self._tick)
@@ -133,15 +184,17 @@ class ProgressUI:
         self.detail_label.config(text=message)
 
         if stage == "done":
-            self.progress.stop()
-            self.progress.config(mode="determinate", value=100)
+            self.title_label.config(fg=th.SUCCESS)
+            self.bar.set(100, color=th.SUCCESS)
             self._mode = "determinate"
+            self.cancel_button.set_enabled(False)
             self.root.after(self.DONE_LINGER_MS, self._close)
             return
         if stage == "error":
-            self.progress.stop()
-            self.progress.config(mode="determinate", value=0)
+            self.title_label.config(fg=th.RED)
+            self.bar.set(100, color=th.RED)
             self._mode = "determinate"
+            self.cancel_button.set_enabled(False)
             self.root.after(self.ERROR_LINGER_MS, self._close)
             return
 
@@ -151,15 +204,11 @@ class ProgressUI:
             pct = -1
 
         if pct >= 0:
-            if self._mode != "determinate":
-                self.progress.stop()
-                self.progress.config(mode="determinate")
-                self._mode = "determinate"
-            self.progress.config(value=max(0, min(pct, 100)))
+            self.bar.set(pct)
+            self._mode = "determinate"
         else:
             if self._mode != "indeterminate":
-                self.progress.config(mode="indeterminate")
-                self.progress.start(12)
+                self.bar.indeterminate()
                 self._mode = "indeterminate"
 
     def _on_cancel(self):
@@ -178,9 +227,9 @@ class ProgressUI:
             pid = None
 
         self._cancelling = True
-        self.title_label.config(text="Cancelling...")
+        self.title_label.config(text="Cancelling...", fg=th.FG)
         self.detail_label.config(text="Stopping render and cleaning up.")
-        self.cancel_button.config(state="disabled")
+        self.cancel_button.set_enabled(False)
 
         if pid:
             try:

@@ -35,6 +35,10 @@ Setup installs everything and adds the scripts to Resolve automatically.
    - **LAB37 Reels** - single-line Swedish captions, 1-3 words, no punctuation (9:16 reels)
    - **LAB37 Podcast** - plain Swedish SRT, full sentences
    - **LAB37 Auto** - auto-detect language, plain SRT
+   - **LAB37 Custom** - opens a settings dialog first: pick language,
+     caption style (full sentences or 1-5 words at a time), line length,
+     ALL CAPS, and punctuation. Choices are remembered, so after dialing it
+     in once for your content it's Enter-and-go.
    - **LAB37 Check** - health check, run after install or a Resolve update
 4. Wait for the progress window to finish. If the timeline has no subtitle
    track yet, the captions are **placed on a new subtitle track

@@ -126,6 +126,9 @@ Every row must say **PASS**. Common failures:
    - **LAB37 Reels** - Swedish, 1-3 word captions for 9:16 reels
    - **LAB37 Podcast** - Swedish, full sentences
    - **LAB37 Auto** - auto-detect language, full sentences
+   - **LAB37 Custom** - a settings window opens first (language, caption
+     style, line length, ALL CAPS). Best choice when the user's content
+     doesn't match the presets; it remembers their choices.
 3. A small progress window appears. First run takes a couple of minutes
    (model loads into memory); after that ~5 seconds per minute of audio.
 4. When it finishes, if the timeline had **no subtitle track**, the captions

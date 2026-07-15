@@ -92,6 +92,7 @@ rm -f "$HOME/Library/Application Support/Blackmagic Design/DaVinci Resolve/Fusio
 cp "$APP_DIR/presets/LAB37 Reels.lua"   "$RESOLVE_SCRIPTS/"
 cp "$APP_DIR/presets/LAB37 Podcast.lua" "$RESOLVE_SCRIPTS/"
 cp "$APP_DIR/presets/LAB37 Auto.lua"    "$RESOLVE_SCRIPTS/"
+cp "$APP_DIR/presets/LAB37 Custom.lua"  "$RESOLVE_SCRIPTS/"
 cp "$APP_DIR/presets/LAB37 Check.lua"   "$RESOLVE_SCRIPTS/"
 echo "$APP_DIR" > "$RESOLVE_SCRIPTS/resolve_whisper_path.txt"
 
