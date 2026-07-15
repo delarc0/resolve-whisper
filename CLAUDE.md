@@ -19,8 +19,11 @@ assisting non-technical users. Human-facing instructions live in README.md.
   health check) and `--file` (standalone, no Resolve) modes
 - `transcribe.py` — Whisper wrapper + silero-vad pre-pass (prevents
   word-timestamp drift after pauses)
-- `srt.py` — word→caption chunking (pause/punctuation logic, Reels mode) and
-  SRT generation
+- `srt.py` — word→caption chunking and SRT generation. Two chunkers: greedy
+  (Reels, max_words > 0) and balanced (Auto/Podcast, max_words == 0) which
+  splits at sentence/silence boundaries then picks break points by cost
+  minimization (even fill, connector penalty, pause bonus) to avoid orphan
+  fragments
 - `progress_ui.py` — Tk progress window; talks to caption.py via an atomic
   JSON status file; Cancel delivers SIGTERM
 - `config.py` — defaults + `caption_config.json` generation

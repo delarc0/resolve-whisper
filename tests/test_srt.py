@@ -256,5 +256,116 @@ class TestWordsToCaptions(unittest.TestCase):
         self.assertEqual(len(caps), 1)
 
 
+class TestBalancedChunking(unittest.TestCase):
+    """Plain-SRT mode (max_words=0) uses cost-minimizing segmentation:
+    balanced caption lengths, no orphan fragments, connector-aware breaks."""
+
+    def setUp(self):
+        from srt import cfg
+        self.cfg = cfg
+        self._saved = dict(cfg)
+        cfg.update({
+            "max_words_per_caption": 0,
+            "max_chars_per_line": 42,
+            "max_lines": 1,
+            "min_duration_s": 1.0,
+            "max_duration_s": 7.0,
+            "gap_frames": 2,
+        })
+
+    def tearDown(self):
+        self.cfg.clear()
+        self.cfg.update(self._saved)
+
+    def _continuous(self, texts, word_dur=0.2, gap=0.02):
+        """Words spoken back to back with tiny gaps."""
+        words, t = [], 0.0
+        for txt in texts:
+            words.append(W(txt, t, t + word_dur))
+            t += word_dur + gap
+        return words
+
+    def test_no_orphan_fragment(self):
+        # 10x 4-char words = 49 chars: must split at 42. Greedy would pack
+        # 8 words (39 chars) + a 2-word orphan; balanced splits ~evenly.
+        words = self._continuous(["abcd"] * 10)
+        caps = words_to_captions([seg(words)], fps=25.0)
+        self.assertEqual(len(caps), 2)
+        lengths = [len(c["text"]) for c in caps]
+        self.assertLess(abs(lengths[0] - lengths[1]), 10)
+        self.assertGreater(min(lengths), 15)
+
+    def test_short_sentence_stays_whole(self):
+        # Fits in one caption -> never split, regardless of internal pauses
+        words = self._continuous(["vi", "ses", "snart", "igen"])
+        words[2] = W("snart", words[2].start + 0.3, words[2].end + 0.3)
+        words[3] = W("igen", words[3].start + 0.3, words[3].end + 0.3)
+        caps = words_to_captions([seg(words)], fps=25.0)
+        self.assertEqual(len(caps), 1)
+
+    def test_forced_split_avoids_connector(self):
+        # 23 chars at capacity 20: must split. The two balance-equivalent
+        # breaks are after "och" (connector) and after "data"; the connector
+        # penalty must steer the break to "data".
+        from srt import cfg
+        cfg["max_chars_per_line"] = 20
+        words = self._continuous(["mera", "data", "och", "kaka", "tema"])
+        caps = words_to_captions([seg(words)], fps=25.0)
+        self.assertEqual(len(caps), 2)
+        for cap in caps:
+            self.assertFalse(cap["text"].endswith("och"))
+
+    def test_forced_split_prefers_pause(self):
+        # 24 chars at capacity 15: two feasible splits (after word 2 or 3).
+        # A real pause after word 2 should win even though the split is
+        # slightly less balanced.
+        from srt import cfg
+        cfg["max_chars_per_line"] = 15
+        words = self._continuous(["aaaa", "bbbb", "cccc", "dddd", "eeee"])
+        shifted = []
+        for i, w in enumerate(words):
+            off = 0.4 if i >= 2 else 0.0
+            shifted.append(W(w.text, w.start + off, w.end + off))
+        caps = words_to_captions([seg(shifted)], fps=25.0)
+        self.assertEqual(len(caps), 2)
+        self.assertEqual(caps[0]["text"], "aaaa bbbb")
+
+    def test_hard_punctuation_splits(self):
+        words = self._continuous(["Hej.", "Du"])
+        caps = words_to_captions([seg(words)], fps=25.0)
+        self.assertEqual(len(caps), 2)
+
+    def test_abbreviation_does_not_split(self):
+        words = self._continuous(["kolla", "t.ex.", "denna"])
+        caps = words_to_captions([seg(words)], fps=25.0)
+        self.assertEqual(len(caps), 1)
+
+    def test_long_silence_splits(self):
+        words = [W("hej", 0.0, 0.3), W("då", 1.2, 1.5)]  # 0.9s silence
+        caps = words_to_captions([seg(words)], fps=25.0)
+        self.assertEqual(len(caps), 2)
+
+    def test_oversized_single_word_survives(self):
+        from srt import cfg
+        cfg["max_chars_per_line"] = 10
+        words = self._continuous(["kort", "jättelångtsammansattord", "slut"])
+        caps = words_to_captions([seg(words)], fps=25.0)
+        joined = " ".join(c["text"] for c in caps)
+        self.assertIn("jättelångtsammansattord", joined)
+
+    def test_max_duration_respected(self):
+        # Slow speech, tiny gaps: 10 words over 15s must split on duration
+        # even though the text fits in one line.
+        from srt import cfg
+        cfg["max_chars_per_line"] = 200
+        words, t = [], 0.0
+        for i in range(10):
+            words.append(W("ord", t, t + 1.4))
+            t += 1.45
+        caps = words_to_captions([seg(words)], fps=25.0)
+        for cap in caps:
+            self.assertLessEqual(cap["end"] - cap["start"], 7.0 + 0.01)
+
+
 if __name__ == "__main__":
     unittest.main()

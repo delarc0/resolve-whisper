@@ -107,9 +107,129 @@ def _mark_emphasized(words: list) -> list:
     return flags
 
 
+# --- Balanced chunking (plain-SRT mode: Auto/Podcast, max_words == 0) -------
+#
+# The greedy chunker breaks the moment a rule fires, which structurally
+# produces a packed caption followed by a short orphan at the end of a
+# sentence ("...full 42-char line" + "och nämns ofta"). Plain mode instead
+# splits the words at hard boundaries (sentence punctuation, real silence)
+# and then picks break points inside each stretch by minimizing a cost over
+# all feasible partitions:
+#   - captions should be evenly filled (squared slack vs capacity)
+#   - breaking after a connector word costs extra
+#   - breaking on a pause or after soft punctuation is rewarded
+# Char/line/duration limits stay hard constraints.
+
+_STRETCH_PAUSE = 0.6          # silence >= this always separates captions
+_CONNECTOR_PENALTY = 1000.0   # breaking after "och"/"i"/"att"/...
+_SOFT_PUNCT_BONUS = 300.0     # breaking after , ; :
+_PAUSE_BONUS_MAX = 600.0      # breaking on a pause, scaled up to _STRETCH_PAUSE
+
+
+def _split_stretches(words: list) -> list:
+    """Split words at hard boundaries: sentence punctuation or real silence."""
+    stretches = []
+    current = []
+    for i, w in enumerate(words):
+        current.append(w)
+        text = w.text.rstrip()
+        hard_punct = (
+            text.endswith((".", "!", "?"))
+            and text.lower() not in _ABBREVIATIONS
+        )
+        pause = words[i + 1].start - w.end if i + 1 < len(words) else 0.0
+        if hard_punct or pause >= _STRETCH_PAUSE:
+            stretches.append(current)
+            current = []
+    if current:
+        stretches.append(current)
+    return stretches
+
+
+def _break_cost(prev, cur) -> float:
+    """Cost of placing a caption break between two adjacent words."""
+    cost = 0.0
+    if _strip_trailing_punct(prev.text.lower()) in _NOBREAK_TRAILING:
+        cost += _CONNECTOR_PENALTY
+    if prev.text.rstrip().endswith((",", ";", ":")):
+        cost -= _SOFT_PUNCT_BONUS
+    pause = max(0.0, cur.start - prev.end)
+    cost -= min(pause, _STRETCH_PAUSE) / _STRETCH_PAUSE * _PAUSE_BONUS_MAX
+    return cost
+
+
+def _partition_stretch(words: list, max_chars: int, max_lines: int,
+                       max_dur: float) -> list:
+    """Find the minimum-cost partition of one stretch into captions."""
+    n = len(words)
+    capacity = max_chars * max_lines
+    # Prefix sums of word lengths for O(1) chunk-text length.
+    plen = [0] * (n + 1)
+    for i, w in enumerate(words):
+        plen[i + 1] = plen[i] + len(w.text)
+
+    def chunk_len(j, i):
+        return plen[i] - plen[j] + (i - j - 1)
+
+    def chunk_fits(j, i):
+        if i - j == 1:
+            return True  # a single word can't be split further
+        if words[i - 1].end - words[j].start > max_dur:
+            return False
+        text = " ".join(w.text for w in words[j:i])
+        lines = _split_into_lines(text, max_chars)
+        return len(lines) <= max_lines and all(len(l) <= max_chars for l in lines)
+
+    best = [float("inf")] * (n + 1)
+    back = [0] * (n + 1)
+    best[0] = 0.0
+    for i in range(1, n + 1):
+        # Grow the candidate chunk backwards; once it stops fitting, longer
+        # chunks can't fit either (length and duration are monotonic).
+        for j in range(i - 1, -1, -1):
+            if i - j > 1 and not chunk_fits(j, i):
+                break
+            slack = max(0, capacity - chunk_len(j, i))
+            cost = best[j] + slack * slack
+            if j > 0:
+                cost += _break_cost(words[j - 1], words[j])
+            if cost < best[i]:
+                best[i] = cost
+                back[i] = j
+
+    chunks = []
+    i = n
+    while i > 0:
+        j = back[i]
+        chunks.append(words[j:i])
+        i = j
+    chunks.reverse()
+    return [
+        {
+            "start": c[0].start,
+            "end": c[-1].end,
+            "text": " ".join(w.text for w in c),
+        }
+        for c in chunks
+    ]
+
+
+def _balanced_captions(all_words: list, max_chars: int, max_lines: int,
+                       max_dur: float) -> list:
+    captions = []
+    for stretch in _split_stretches(all_words):
+        captions.extend(_partition_stretch(stretch, max_chars, max_lines, max_dur))
+    return captions
+
+
 def words_to_captions(segments: list, fps: float = 24.0) -> list:
     """
     Group transcription segments into caption blocks.
+
+    Reels mode (max_words > 0) chunks greedily: short groups timed tightly to
+    speech, emphasized words solo. Plain-SRT mode (max_words == 0) uses
+    balanced segmentation so sentences split at the globally best points
+    instead of packing greedily until the char limit hits.
 
     Returns list of dicts: [{"start": float, "end": float, "text": str}, ...]
     Each dict represents one caption with timing in seconds.
@@ -131,13 +251,44 @@ def words_to_captions(segments: list, fps: float = 24.0) -> list:
     if not all_words:
         return []
 
-    # Emphasis-solo (held / isolated words land on their own caption) is a
-    # Reels-mode feature. In plain-SRT mode (max_words=0) we want full
-    # sentences, not solo words just because the speaker drew them out.
     if max_words > 0:
-        emphasized = _mark_emphasized(all_words)
+        captions = _greedy_captions(all_words, max_words, max_chars,
+                                    max_lines, max_dur)
     else:
-        emphasized = [False] * len(all_words)
+        captions = _balanced_captions(all_words, max_chars, max_lines, max_dur)
+
+    # Whisper word timestamps are occasionally non-monotonic; sort so the
+    # overlap clamp below can never see a "next" caption that starts before
+    # this one (which would clamp end below start).
+    captions.sort(key=lambda c: c["start"])
+
+    # Enforce minimum duration and add gaps
+    for i, cap in enumerate(captions):
+        dur = cap["end"] - cap["start"]
+        if dur < min_dur:
+            cap["end"] = cap["start"] + min_dur
+
+        # Ensure end never overlaps with next caption's start
+        if i < len(captions) - 1:
+            next_start = captions[i + 1]["start"]
+            if cap["end"] + gap_s > next_start:
+                cap["end"] = max(cap["start"] + 0.1, next_start - gap_s)
+            # Hard clamp: never exceed next caption's start
+            if cap["end"] > next_start:
+                cap["end"] = next_start
+        # Never emit start >= end -- zero/negative durations make some
+        # importers reject the whole file. A 50ms sliver beats a dead SRT.
+        if cap["end"] <= cap["start"]:
+            cap["end"] = cap["start"] + 0.05
+
+    return captions
+
+
+def _greedy_captions(all_words: list, max_words: int, max_chars: int,
+                     max_lines: int, max_dur: float) -> list:
+    """Greedy chunker for Reels mode (max_words > 0)."""
+    # Held / isolated words land on their own caption for emphasis.
+    emphasized = _mark_emphasized(all_words)
 
     # Group words into caption blocks
     captions = []
@@ -153,7 +304,7 @@ def words_to_captions(segments: list, fps: float = 24.0) -> list:
         test_lines = _split_into_lines(test_text, max_chars)
 
         # Check word count limit
-        too_many_words = max_words > 0 and len(block_words) >= max_words
+        too_many_words = len(block_words) >= max_words
 
         # Check timing: would this block exceed max duration?
         if block_words:
@@ -173,10 +324,7 @@ def words_to_captions(segments: list, fps: float = 24.0) -> list:
 
         # Tiered pause handling: a hard pause always breaks; a smaller pause
         # only breaks once the caption has been on screen long enough that
-        # the viewer needs a refresh. The micro-pause rule is Reels-only
-        # (max_words > 0) -- in plain-SRT mode (max_words=0) we want the
-        # chunker to fill captions up to the char/line limit instead of
-        # fragmenting on every breath.
+        # the viewer needs a refresh.
         if block_words:
             block_dur_so_far = block_words[-1].end - block_words[0].start
         else:
@@ -185,10 +333,7 @@ def words_to_captions(segments: list, fps: float = 24.0) -> list:
         # >0.18s pause = clear breath pause -> always break
         hard_pause = block_words and pause > 0.18
         # any micro-pause (>0.06s) breaks if caption has been up for ~0.6s+
-        micro_pause = (
-            max_words > 0
-            and block_words and pause > 0.06 and block_dur_so_far > 0.6
-        )
+        micro_pause = block_words and pause > 0.06 and block_dur_so_far > 0.6
         natural_break = hard_pause or micro_pause
 
         # Sentence-ending punctuation always breaks (. ! ?). Soft punctuation
@@ -253,30 +398,6 @@ def words_to_captions(segments: list, fps: float = 24.0) -> list:
             "end": block_words[-1].end,
             "text": block_text,
         })
-
-    # Whisper word timestamps are occasionally non-monotonic; sort so the
-    # overlap clamp below can never see a "next" caption that starts before
-    # this one (which would clamp end below start).
-    captions.sort(key=lambda c: c["start"])
-
-    # Enforce minimum duration and add gaps
-    for i, cap in enumerate(captions):
-        dur = cap["end"] - cap["start"]
-        if dur < min_dur:
-            cap["end"] = cap["start"] + min_dur
-
-        # Ensure end never overlaps with next caption's start
-        if i < len(captions) - 1:
-            next_start = captions[i + 1]["start"]
-            if cap["end"] + gap_s > next_start:
-                cap["end"] = max(cap["start"] + 0.1, next_start - gap_s)
-            # Hard clamp: never exceed next caption's start
-            if cap["end"] > next_start:
-                cap["end"] = next_start
-        # Never emit start >= end -- zero/negative durations make some
-        # importers reject the whole file. A 50ms sliver beats a dead SRT.
-        if cap["end"] <= cap["start"]:
-            cap["end"] = cap["start"] + 0.05
 
     return captions
 
