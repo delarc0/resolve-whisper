@@ -2,7 +2,7 @@
 
 AI-powered captions for DaVinci Resolve Studio. Runs locally on your GPU. No cloud, no subscription, no waiting.
 
-Built by LAB37 // lab37.io
+Built by LAB37 // lab37.tools
 
 ---
 
@@ -168,4 +168,4 @@ SRT file appears next to the source file.
 
 ---
 
-LAB37 TOOLS // lab37.io
+LAB37 TOOLS // lab37.tools
