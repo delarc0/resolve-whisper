@@ -307,9 +307,12 @@ def words_to_srt(segments: list, fps: float = 24.0, strip_punctuation: bool = Fa
     max_chars = cfg["max_chars_per_line"]
     max_lines = cfg["max_lines"]
 
+    uppercase = bool(cfg.get("uppercase", False))
     srt_lines = []
     for i, cap in enumerate(captions, 1):
         text = strip_punct_text(cap["text"]) if strip_punctuation else cap["text"]
+        if uppercase:
+            text = text.upper()
         lines = _split_into_lines(text, max_chars)
         display = lines[:max_lines]
 
@@ -348,6 +351,9 @@ def write_captions_json(segments: list, output_path: str, fps: float = 24.0, str
         log.warning("No captions generated - empty transcription.")
         return False
 
+    if cfg.get("uppercase", False):
+        for cap in captions:
+            cap["text"] = cap["text"].upper()
     if strip_punctuation:
         for cap in captions:
             cap["text"] = strip_punct_text(cap["text"])

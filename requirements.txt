@@ -1,21 +1,12 @@
 # Resolve Whisper - dependencies
 #
-# The setup scripts (setup.bat / setup.sh) handle platform-specific
-# installs automatically. Use those for the recommended install path.
+# Mac (Apple Silicon) is the supported platform:
+#   pip install -r requirements-mac.txt
 #
-# Manual install (CLI --file mode only):
-#
-# Windows (CUDA):
+# The entries below are only for running `caption.py --file` on a
+# non-Mac machine (no Resolve integration there):
 #   pip install torch
 #   pip install -r requirements.txt
-#
-# Windows (no NVIDIA GPU):
-#   pip install torch --index-url https://download.pytorch.org/whl/cpu
-#   pip install -r requirements.txt
-#
-# Mac (Apple Silicon):
-#   pip install -r requirements-mac.txt
 
-# Core (Windows / Linux)
 faster-whisper>=1.0.0
 numpy

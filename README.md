@@ -18,12 +18,7 @@ Mac), paste this and let it do the work:
 > AGENT_INSTALL.md exactly. I'm not technical, so do everything you can
 > yourself and guide me in simple steps when you need me.
 
-### Windows
-1. Make sure Python 3.10+ is installed ([python.org](https://python.org) - check "Add to PATH")
-2. Double-click **`setup.bat`**
-3. Wait for it to finish (downloads a ~3 GB AI model on first run)
-
-### Mac
+### Mac (Apple Silicon)
 1. Make sure Python 3 is installed (`brew install python` if not)
 2. Open Terminal in this folder and run: `./setup.sh`
 3. Wait for it to finish (downloads a ~3 GB AI model on first run)
@@ -34,8 +29,6 @@ Setup installs everything and adds the scripts to Resolve automatically.
 
 ## Use
 
-### Mac
-
 1. Open **DaVinci Resolve Studio** and select a timeline
 2. Set your **in and out points** (I and O keys) for the section you want captioned
 3. Go to **Workspace > Scripts > Edit** and pick a preset:
@@ -43,19 +36,31 @@ Setup installs everything and adds the scripts to Resolve automatically.
    - **LAB37 Podcast** - plain Swedish SRT, full sentences
    - **LAB37 Auto** - auto-detect language, plain SRT
    - **LAB37 Check** - health check, run after install or a Resolve update
-4. Wait for the progress window to finish — the SRT is imported into the
-   Media Pool automatically (and a subtitle track is created if needed)
-5. In the Media Pool: right-click the SRT > **Insert Selected Subtitles to Timeline**
+4. Wait for the progress window to finish. If the timeline has no subtitle
+   track yet, the captions are **placed on a new subtitle track
+   automatically** — you're done.
+5. If the timeline already has subtitle tracks (e.g. you're re-generating),
+   the SRT lands in the Media Pool instead: right-click it there >
+   **Insert Selected Subtitles to Timeline**.
 
-Don't drag SRT files from Finder onto the timeline — Resolve 21.0.2 has a
+Never drag SRT files from Finder onto the timeline — Resolve 21.0.2 has a
 crash bug in its drag handler (worst on collaboration projects with locked
-timelines). The Media Pool right-click route is drag-free and safe.
+timelines). Auto-placement can also fail on collaboration timelines locked
+by another editor; the Media Pool right-click route works once you hold the
+lock.
 
-### Windows
+## Caption style (font, size, stroke)
 
-1. Steps 1-2 as above
-2. Go to **Workspace > Scripts > LAB37 Resolve Whisper**
-3. When it finishes: **File > Import > Subtitle** and select the `.srt`
+Resolve's subtitle styling has no scripting API, so the tool can't set it
+for you. Style each timeline **once** and it sticks:
+
+1. After the first generation, select the subtitle track
+2. Inspector > **Track Style**: set font (e.g. Montserrat), size, stroke
+3. Every caption on that track updates, and future re-generations onto the
+   same track inherit the style automatically
+
+ALL CAPS is handled by the tool itself (`"uppercase": true` in the config,
+on by default) since Resolve has no caps transform.
 
 Each run writes a new file named `<timeline> YYYYMMDD-HHMMSS.srt` so Resolve
 never re-imports a stale cached version. The tool's own files older than 30
@@ -77,6 +82,7 @@ After running once, a `caption_config.json` file appears in the install folder. 
 | `min_duration_s` | `1.0` | Shortest a subtitle stays on screen (seconds) |
 | `max_duration_s` | `7.0` | Longest a subtitle stays on screen (seconds) |
 | `keep_srt_days` | `30` | Auto-delete this tool's old SRTs from the output folder (0 = never) |
+| `uppercase` | `true` | ALL CAPS caption text (Resolve has no caps transform) |
 
 Most people won't need to change anything.
 
@@ -98,7 +104,7 @@ Output goes to `/tmp/resolve_whisper_check.log` when launched from Resolve.
 Run **LAB37 Check** first — it catches almost everything below automatically.
 
 **Script doesn't appear in Workspace > Scripts**
-Re-run `setup.bat` / `setup.sh`. It copies the script to Resolve's scripts folder.
+Re-run `./setup.sh`. It copies the scripts to Resolve's scripts folder.
 
 **"Python environment not found" error**
 Re-run setup. The virtual environment may not have been created.
@@ -143,8 +149,8 @@ Re-run setup so the Lua launchers get re-copied to the new Scripts folder, then 
 You can also use it outside of Resolve to caption any audio/video file:
 
 ```
-.venv\Scripts\python caption.py --file video.mp4
-.venv\Scripts\python caption.py --file interview.wav --language sv
+.venv/bin/python caption.py --file video.mp4
+.venv/bin/python caption.py --file interview.wav --language sv
 .venv/bin/python caption.py --file clip.mov --language auto
 ```
 
@@ -156,7 +162,7 @@ SRT file appears next to the source file.
 
 - DaVinci Resolve Studio 18+ (scripting API is Studio only; Resolve 21 supported)
 - Python 3.10+
-- Mac: Apple Silicon. Windows: NVIDIA GPU recommended (CPU mode works, slower)
+- Apple Silicon Mac (the mlx Whisper backend is Metal-only)
 - ~3 GB disk space (AI model + dependencies)
 - ~2-3 GB VRAM during transcription
 

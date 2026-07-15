@@ -27,6 +27,9 @@ DEFAULT_CONFIG = {
     "min_duration_s": 1.0,
     "max_duration_s": 7.0,
     "gap_frames": 2,            # gap between subtitles in frames
+    # ALL CAPS caption text. Resolve's subtitle track style has no caps
+    # transform (and no styling API at all), so caps live in the text.
+    "uppercase": True,
     # Output
     "output_dir": None,         # None = same dir as source / project
     "keep_srt_days": 30,        # auto-delete SRTs older than this in output dir; 0 disables

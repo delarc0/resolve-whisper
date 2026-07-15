@@ -306,6 +306,18 @@ class TestWordsToSrtStructure(unittest.TestCase):
         srt_cfg.clear()
         srt_cfg.update(self._saved)
 
+    def test_uppercase_applied_when_enabled(self):
+        srt_cfg["uppercase"] = True
+        words = [W("hej på er.", 0.0, 0.5)]
+        out = words_to_srt([Seg(words)], fps=25.0)
+        self.assertIn("HEJ PÅ ER.", out)
+
+    def test_uppercase_off_preserves_case(self):
+        srt_cfg["uppercase"] = False
+        words = [W("Hej på er.", 0.0, 0.5)]
+        out = words_to_srt([Seg(words)], fps=25.0)
+        self.assertIn("Hej på er.", out)
+
     def test_srt_block_structure(self):
         words = [
             W("Hej.", 0.0, 0.5),

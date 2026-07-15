@@ -779,32 +779,49 @@ def run_resolve_mode(args):
         except Exception as e:
             log.debug(f"OpenPage('edit') failed: {e}")
 
-        # Import the SRT into the Media Pool so nobody has to drag it in
-        # from Finder -- Resolve 21.0.2 can segfault in its drag handler
-        # (dragEnterEvent) when an external file is dragged onto a
-        # collaboration-locked timeline. From the pool, right-click >
-        # 'Insert Selected Subtitles to Timeline' is drag-free. The API
-        # cannot place subtitles on a track itself (verified: every
-        # AppendToTimeline form returns None for Subtitle items), so the
-        # right-click step stays manual. We pre-create the subtitle track
-        # so the insert action has somewhere to land.
+        # Import the SRT into the Media Pool, then place it on a subtitle
+        # track via AppendToTimeline. Never via Finder drag -- Resolve
+        # 21.0.2 can segfault in its drag handler (dragEnterEvent).
+        #
+        # AppendToTimeline quirks (learned the hard way):
+        # - it returns None for Subtitle items EVEN ON SUCCESS, so the only
+        #   reliable signal is counting items on the subtitle track after
+        # - it fails (places nothing) when another collaborator holds the
+        #   timeline lock -- that's the fallback path below
+        # - it targets subtitle track 1, so we only auto-place onto a
+        #   timeline with NO existing subtitle tracks; if tracks exist we
+        #   must not risk stacking onto someone's hand-edited captions
         imported_to_pool = False
+        auto_placed = False
         media_pool = _safe(project.GetMediaPool)
+        pool_items = None
         if media_pool:
             pool_items = _safe(media_pool.ImportMedia, [srt_path])
             imported_to_pool = bool(pool_items)
-        if imported_to_pool and _safe(timeline.GetTrackCount, "subtitle") == 0:
-            _safe(timeline.AddTrack, "subtitle")
+
+        if imported_to_pool:
+            existing_sub_tracks = _safe(timeline.GetTrackCount, "subtitle", _default=0) or 0
+            if existing_sub_tracks == 0:
+                _safe(timeline.AddTrack, "subtitle")
+                _safe(media_pool.AppendToTimeline, list(pool_items))
+                placed = _safe(timeline.GetItemListInTrack, "subtitle", 1, _default=[]) or []
+                auto_placed = len(placed) > 0
+                if auto_placed:
+                    log.info(f"Captions placed on subtitle track ({len(placed)} items).")
+            else:
+                log.info("Timeline already has subtitle track(s); not auto-placing to avoid mixing with existing captions.")
 
         log.info("")
         log.info(f"SRT saved to: {srt_path}")
-        if imported_to_pool:
+        if auto_placed:
+            _write_status("done", "Captions are on your timeline.", progress=100)
+        elif imported_to_pool:
             log.info("SRT imported into the Media Pool.")
             log.info("In Resolve: right-click it > Insert Selected Subtitles to Timeline.")
             log.info("(Avoid dragging SRTs from Finder -- Resolve 21.0.2 can crash on that.)")
             _write_status("done", "In Media Pool: right-click > Insert Selected Subtitles", progress=100)
         else:
-            log.info("Drag from Finder onto a subtitle track in your timeline.")
+            log.info("Drag import is unreliable on Resolve 21; use File > Import > Subtitle.")
             _open_folder(output_dir)
             _write_status("done", os.path.basename(srt_path), progress=100)
         return 0
@@ -901,8 +918,6 @@ def run_file_mode(args):
         def _on_progress(pct):
             if not prog_stop.is_set():
                 prog_stop.set()
-            # Machine-readable line for resolve_script.py to parse, plus UI status.
-            print(f"PROGRESS:{pct}", flush=True)
             try:
                 pct_int = max(0, min(int(pct), 100))
             except (ValueError, TypeError):

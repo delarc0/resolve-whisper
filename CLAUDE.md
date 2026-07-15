@@ -24,7 +24,18 @@ assisting non-technical users. Human-facing instructions live in README.md.
 - `progress_ui.py` — Tk progress window; talks to caption.py via an atomic
   JSON status file; Cancel delivers SIGTERM
 - `config.py` — defaults + `caption_config.json` generation
-- `resolve_script.py`, `launcher_stub.py`, `setup.bat` — Windows path (secondary)
+
+Mac-only. The old Windows path (resolve_script.py + launcher_stub.py +
+setup.bat) was removed 2026-07-15: it ran Tk dialogs inside Resolve's process
+which freezes Resolve on macOS, and it had drifted from the hardened
+pipeline. Don't resurrect it.
+
+Caption placement: SRT is imported to the Media Pool and placed on a fresh
+subtitle track via `AppendToTimeline` — which returns None even on success
+(verify by counting track items) and fails when another collaborator holds
+the timeline lock. Subtitle track STYLE (font/size/stroke) has no scripting
+API at all; users style the track once per timeline in the Inspector. ALL
+CAPS therefore lives in the text (`uppercase` config).
 
 ## Development
 
