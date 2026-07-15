@@ -151,15 +151,21 @@ def _start_progress_estimator(audio_duration_s: float):
     stop = threading.Event()
     # Conservative 4x real-time so the bar advances at most as fast as the
     # actual transcription -- better to under-promise than to sit on 95%
-    # while transcription drags on.
-    expected = max(audio_duration_s / 4.0, 1.0)
+    # while transcription drags on. Unknown duration (0.0) means the
+    # estimate would be pure fiction (instant 95% that sits for the whole
+    # run); show an honest indeterminate bar instead (progress=-1).
+    expected = max(audio_duration_s / 4.0, 1.0) if audio_duration_s > 0 else None
 
     def _run():
         t0 = time.time()
         while not stop.is_set():
-            elapsed = time.time() - t0
-            pct = int(min(elapsed / expected * 95.0, 95.0))
-            _write_status("transcribing", f"~{pct}% complete", progress=pct)
+            if expected is None:
+                _write_status("transcribing", "Transcribing audio...",
+                              progress=-1)
+            else:
+                elapsed = time.time() - t0
+                pct = int(min(elapsed / expected * 95.0, 95.0))
+                _write_status("transcribing", f"~{pct}% complete", progress=pct)
             if stop.wait(0.5):
                 return
 

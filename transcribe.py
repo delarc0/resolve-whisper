@@ -3,6 +3,7 @@ Whisper transcription engine with word-level timestamps.
 Forked from Bark's transcriber.py, adapted for file-based captioning.
 """
 import logging
+import os
 import re
 from dataclasses import dataclass
 
@@ -259,18 +260,64 @@ class Transcriber:
         return segments
 
     @staticmethod
-    def _load_mono_16k(audio_path: str):
+    def _find_tool(name: str):
+        """Locate ffmpeg/ffprobe even when Resolve launches us with a bare
+        PATH (Homebrew lives outside the default)."""
+        import shutil
+        found = shutil.which(name)
+        if found:
+            return found
+        for candidate in (f"/opt/homebrew/bin/{name}", f"/usr/local/bin/{name}"):
+            if os.path.exists(candidate):
+                return candidate
+        return None
+
+    @classmethod
+    def _load_mono_16k_ffmpeg(cls, audio_path: str):
+        """Decode any codec to mono 16kHz float32 via ffmpeg.
+
+        Fallback for formats libsndfile can't open - notably the AAC/.mp4
+        that Resolve 21's factory 'Audio Only' preset renders. ffmpeg is a
+        hard dependency of mlx_whisper, so it's always present when the
+        pipeline can run at all.
+        """
+        import subprocess
+        import numpy as np
+
+        ffmpeg = cls._find_tool("ffmpeg")
+        if not ffmpeg:
+            raise RuntimeError("ffmpeg not found for audio decode fallback")
+        proc = subprocess.run(
+            [ffmpeg, "-v", "error", "-i", audio_path,
+             "-f", "s16le", "-ac", "1", "-ar", "16000", "-"],
+            capture_output=True, timeout=600,
+        )
+        if proc.returncode != 0 or not proc.stdout:
+            raise RuntimeError(
+                f"ffmpeg decode failed: {proc.stderr.decode(errors='replace')[:200]}")
+        pcm = np.frombuffer(proc.stdout, dtype=np.int16)
+        return pcm.astype(np.float32) / 32768.0
+
+    @classmethod
+    def _load_mono_16k(cls, audio_path: str):
         """Read audio in 30-second blocks, downmix to mono, resample to 16kHz.
 
         Block-wise loading keeps peak memory bounded by one block at the
         source sample rate (~10MB at 48kHz stereo) instead of materialising
         the whole file twice (raw + resampled). Important for hour-long
         interviews on 16GB machines.
+
+        Codecs libsndfile can't read (AAC etc.) fall back to an ffmpeg
+        decode so the VAD pre-pass never silently drops out.
         """
         import soundfile as sf
         import numpy as np
 
-        info = sf.info(audio_path)
+        try:
+            info = sf.info(audio_path)
+        except Exception:
+            log.info("libsndfile can't read this format; decoding via ffmpeg.")
+            return cls._load_mono_16k_ffmpeg(audio_path)
         sr = info.samplerate
         target_sr = 16000
         block = sr * 30
@@ -301,11 +348,30 @@ class Transcriber:
         return np.concatenate(chunks)
 
     def get_audio_duration(self, audio_path: str) -> float:
-        """Return audio duration in seconds, or 0.0 on failure."""
+        """Return audio duration in seconds, or 0.0 on failure.
+
+        soundfile first (cheap header read), ffprobe as the fallback for
+        codecs libsndfile can't open (AAC etc.) - a 0.0 here collapses the
+        progress estimate downstream, so fight for a real answer.
+        """
         try:
             import soundfile as sf
             info = sf.info(audio_path)
-            return info.frames / float(info.samplerate) if info.samplerate else 0.0
+            if info.samplerate:
+                return info.frames / float(info.samplerate)
+        except Exception:
+            pass
+        try:
+            import subprocess
+            ffprobe = self._find_tool("ffprobe")
+            if not ffprobe:
+                return 0.0
+            proc = subprocess.run(
+                [ffprobe, "-v", "error", "-show_entries", "format=duration",
+                 "-of", "default=noprint_wrappers=1:nokey=1", audio_path],
+                capture_output=True, text=True, timeout=60,
+            )
+            return max(float(proc.stdout.strip()), 0.0)
         except Exception:
             return 0.0
 
