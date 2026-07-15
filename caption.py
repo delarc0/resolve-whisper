@@ -384,7 +384,7 @@ def _validate_audio_only_settings(settings: dict) -> list:
     # depending on version. We just look for evidence of WAV / PCM.
     audio_codec = settings.get("AudioCodec", "")
     if isinstance(audio_codec, str) and audio_codec and "pcm" not in audio_codec.lower() and "linearpcm" not in audio_codec.lower().replace(" ", ""):
-        # Don't fail outright on codec mismatch — Whisper handles many codecs
+        # Don't fail outright on codec mismatch - Whisper handles many codecs
         # via ffmpeg. Just warn through the problems list at info level.
         log.info(f"Audio codec is {audio_codec!r} (PCM preferred but not required).")
 
@@ -991,7 +991,7 @@ def run_check_mode(args):
 
     def _row(name, ok, detail=""):
         prefix = "PASS" if ok else "FAIL"
-        log.info(f"  [{prefix}] {name}{(' — ' + detail) if detail else ''}")
+        log.info(f"  [{prefix}] {name}{(' - ' + detail) if detail else ''}")
         if not ok:
             failures.append(name)
 

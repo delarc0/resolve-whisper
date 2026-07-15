@@ -38,12 +38,12 @@ Setup installs everything and adds the scripts to Resolve automatically.
    - **LAB37 Check** - health check, run after install or a Resolve update
 4. Wait for the progress window to finish. If the timeline has no subtitle
    track yet, the captions are **placed on a new subtitle track
-   automatically** — you're done.
+   automatically** - you're done.
 5. If the timeline already has subtitle tracks (e.g. you're re-generating),
    the SRT lands in the Media Pool instead: right-click it there >
    **Insert Selected Subtitles to Timeline**.
 
-Never drag SRT files from Finder onto the timeline — Resolve 21.0.2 has a
+Never drag SRT files from Finder onto the timeline - Resolve 21.0.2 has a
 crash bug in its drag handler (worst on collaboration projects with locked
 timelines). Auto-placement can also fail on collaboration timelines locked
 by another editor; the Media Pool right-click route works once you hold the
@@ -101,7 +101,7 @@ Output goes to `/tmp/resolve_whisper_check.log` when launched from Resolve.
 
 ## Troubleshooting
 
-Run **LAB37 Check** first — it catches almost everything below automatically.
+Run **LAB37 Check** first - it catches almost everything below automatically.
 
 **Script doesn't appear in Workspace > Scripts**
 Re-run `./setup.sh`. It copies the scripts to Resolve's scripts folder.
@@ -130,7 +130,7 @@ A previous run is still working (or its progress window is open). Wait for it
 or cancel it from its progress window, then try again.
 
 **"'Audio Only' render preset not found"**
-Run **LAB37 Check** — it'll create the preset for you.
+Run **LAB37 Check** - it'll create the preset for you.
 
 **"'Audio Only' preset is misconfigured"**
 The preset was edited (probably exported as video by accident). Recreate it:
