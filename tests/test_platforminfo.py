@@ -74,6 +74,20 @@ class TestFindTool(unittest.TestCase):
             self.assertTrue(all(c.endswith("ffmpeg.exe") for c in cands))
 
 
+class TestAddCudaDllDir(unittest.TestCase):
+    def test_noop_off_windows(self):
+        # On non-Windows this must do nothing and never raise, even if torch
+        # is importable. add_dll_directory only exists on Windows anyway.
+        with mock.patch.multiple(pi, IS_WIN=False):
+            pi.add_cuda_dll_dir()  # should simply return
+
+    def test_windows_missing_torch_is_safe(self):
+        with mock.patch.multiple(pi, IS_WIN=True), \
+             mock.patch.dict("sys.modules", {"torch": None}):
+            # importing torch raises -> caught, no exception propagates
+            pi.add_cuda_dll_dir()
+
+
 class TestBootstrapResolveEnv(unittest.TestCase):
     def test_sets_env_when_absent(self):
         with mock.patch.dict(os.environ, {}, clear=True), \

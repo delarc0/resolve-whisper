@@ -29,9 +29,10 @@ computer), paste this and let it do the work:
    `powershell -ExecutionPolicy Bypass -File .\setup.ps1`
 3. Wait for it to finish (downloads a ~3 GB AI model on first run)
 
-Windows runs the faster-whisper backend on **CPU** for now (works on any PC;
-slower than a GPU on long timelines). GPU acceleration on Windows is a planned
-follow-up. Setup installs everything and adds the scripts to Resolve
+Windows runs the faster-whisper backend. If you have an **NVIDIA GPU** it uses
+CUDA automatically (setup installs the CUDA PyTorch build, which supplies the
+cuBLAS/cuDNN libraries); machines without an NVIDIA GPU run on CPU (slower on
+long timelines). Setup installs everything and adds the scripts to Resolve
 automatically on both platforms.
 
 ---
@@ -175,9 +176,10 @@ SRT file appears next to the source file.
 
 - DaVinci Resolve Studio 18+ (scripting API is Studio only; Resolve 21 supported)
 - Python 3.10+
-- Mac (Apple Silicon, mlx backend, GPU) or Windows 10/11 (faster-whisper
-  backend, CPU for now; GPU support in progress)
-- ~3 GB disk space (AI model + dependencies)
+- Mac (Apple Silicon, mlx backend) or Windows 10/11 (faster-whisper backend;
+  NVIDIA GPU used automatically via CUDA, else CPU)
+- ~3 GB disk space (AI model + dependencies; more on Windows GPU for the CUDA
+  PyTorch build)
 
 ---
 

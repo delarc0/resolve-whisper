@@ -58,16 +58,20 @@ if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {
     Write-Host "  ffmpeg OK"
 }
 
-# --- GPU note ---
-# The Windows backend is faster-whisper (CTranslate2), which needs cuBLAS +
-# cuDNN libraries for GPU, NOT torch. This installer sets up reliable CPU
-# mode; GPU on Windows is a tracked follow-up (verify on a real NVIDIA box
-# before enabling). torch is not installed (it was only used for a probe).
+# --- GPU detection ---
+# The Windows backend is faster-whisper (CTranslate2). For GPU it needs the
+# CUDA cuBLAS + cuDNN libraries; the CUDA build of PyTorch ships those DLLs
+# (and gives us the cuda-availability probe), and transcribe.py adds torch's
+# lib dir to the DLL search path so CTranslate2 can load them. No NVIDIA GPU
+# -> CPU-only install (works everywhere, slower on long timelines).
+$hasNvidia = $false
 if (Get-Command nvidia-smi -ErrorAction SilentlyContinue) {
-    Write-Host "  NVIDIA GPU detected, but GPU mode on Windows isn't enabled yet."
-    Write-Host "        Running in CPU mode. Ask Erik if long timelines are too slow."
+    try { & nvidia-smi | Out-Null; $hasNvidia = $true } catch { $hasNvidia = $false }
+}
+if ($hasNvidia) {
+    Write-Host "  NVIDIA GPU detected -> GPU (CUDA) mode"
 } else {
-    Write-Host "  Running in CPU mode."
+    Write-Host "  No NVIDIA GPU detected -> CPU mode (slower on long timelines)"
 }
 
 Write-Host "  [1/4] Creating virtual environment..."
@@ -81,9 +85,13 @@ $venvPy = Join-Path $venv "Scripts\python.exe"
 
 Write-Host "  [2/4] Installing dependencies..."
 & $venvPy -m pip install --quiet --upgrade pip
-# CPU-only for now. A future GPU branch would add the CUDA torch wheel plus
-# nvidia-cublas-cu12 + nvidia-cudnn-cu12 (which CTranslate2 needs), verified
-# on a real NVIDIA box.
+if ($hasNvidia) {
+    # CUDA build of PyTorch: provides torch.cuda.is_available() (the device
+    # probe in config.py) and bundles the cuBLAS/cuDNN DLLs CTranslate2 needs.
+    # cu121 ships cuDNN 9, which matches faster-whisper's CTranslate2 4.x.
+    Write-Host "         Installing CUDA PyTorch (provides cuDNN/cuBLAS for GPU)..."
+    & $venvPy -m pip install --quiet torch --index-url https://download.pytorch.org/whl/cu121
+}
 & $venvPy -m pip install --quiet -r (Join-Path $AppDir "requirements.txt")
 
 & $venvPy -c "import faster_whisper" 2>$null

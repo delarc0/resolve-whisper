@@ -1,12 +1,13 @@
 # Resolve Whisper - Windows / non-Mac dependencies
 #
-# Windows install is handled by setup.ps1, which installs torch first
-# (CUDA build if an NVIDIA GPU is present, otherwise CPU) and then this file.
-# The Windows backend is faster-whisper, which ships its own VAD, so the
-# Mac-only silero-vad + mlx packages are not needed here.
+# Windows install is handled by setup.ps1. On a machine with an NVIDIA GPU it
+# also installs the CUDA build of PyTorch (which provides the cuda probe and
+# bundles the cuBLAS/cuDNN DLLs CTranslate2 needs for GPU); CPU-only machines
+# skip torch entirely. The Windows backend is faster-whisper, which ships its
+# own VAD, so the Mac-only silero-vad + mlx packages are not needed here.
 #
-# Manual install:
-#   pip install torch            # or the CUDA wheel, see setup.ps1
+# Manual GPU install:
+#   pip install torch --index-url https://download.pytorch.org/whl/cu121
 #   pip install -r requirements.txt
 
 faster-whisper>=1.0.0

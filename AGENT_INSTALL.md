@@ -183,6 +183,7 @@ Run everything in **PowerShell** yourself.
 Get-PSDrive C | Select-Object Free               # need ~6 GB free
 Test-Path "C:\Program Files\Blackmagic Design\DaVinci Resolve\Resolve.exe"  # Resolve installed?
 python --version                                 # or: py --version
+nvidia-smi                                        # works -> GPU (CUDA) mode; missing -> CPU mode
 ```
 
 - **Resolve missing** → the user installs DaVinci Resolve **Studio** first
@@ -191,8 +192,8 @@ python --version                                 # or: py --version
 - **Python missing / older than 3.10** → install Python 3.10+ from python.org
   and tell the user to tick **"Add python.exe to PATH"** in the installer.
   You can't do the GUI install for them; guide them, then continue.
-- Windows runs on **CPU** for now (GPU is a planned follow-up), so it's slower
-  than Mac on long timelines. That's expected, not a fault.
+- **`nvidia-smi` works** → GPU mode; setup installs the CUDA PyTorch build.
+  **Missing** → CPU mode (works, slower on long timelines).
 
 ## Phase 1 (Windows) - Get the code
 
@@ -213,10 +214,11 @@ cd "$env:USERPROFILE\Tools\resolve-whisper"
 powershell -ExecutionPolicy Bypass -File .\setup.ps1
 ```
 
-This creates the Python environment, installs faster-whisper (CPU mode),
-copies the menu entries into Resolve, and downloads the ~3 GB model. Narrate
-progress; every section should end in OK. If ffmpeg was just installed via
-winget, open a fresh PowerShell so it's on PATH before continuing.
+This creates the Python environment, installs faster-whisper (plus the CUDA
+PyTorch build if an NVIDIA GPU is present), copies the menu entries into
+Resolve, and downloads the ~3 GB model. Narrate progress; every section
+should end in OK. If ffmpeg was just installed via winget, open a fresh
+PowerShell so it's on PATH before continuing.
 
 ## Phase 3 (Windows) - none
 
@@ -240,6 +242,7 @@ There's no separate step 3; once setup.ps1 finishes cleanly, go to **Phase 4**
 | Resolve crashes on SRT drag | known Resolve 21.0.2 bug - use Media Pool right-click route, never drag |
 | "'Audio Only' preset not found" | run LAB37 Check (creates it); on Resolve 21 it's built in |
 | Wrong language in captions | use the LAB37 Auto preset, or tell the user to always pick the preset matching the content language |
+| Windows: transcription slow / not using the GPU | check the run log for "Loading model ... on cuda"; if it says "CUDA init failed" it fell back to CPU. Re-run `.\setup.ps1` on a machine with an NVIDIA GPU (it installs the CUDA PyTorch build); a cuDNN mismatch is the usual cause |
 
 ## Notes
 

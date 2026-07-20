@@ -131,6 +131,11 @@ class Transcriber:
         else:
             from faster_whisper import WhisperModel
             self._mlx = None
+            # On Windows CUDA, make CTranslate2 find torch's bundled
+            # cuBLAS/cuDNN DLLs before the model loads.
+            if _config.DEVICE == "cuda":
+                import platforminfo
+                platforminfo.add_cuda_dll_dir()
             log.info(f"Loading model '{_config.MODEL_SIZE}' on {_config.DEVICE} ({_config.COMPUTE_TYPE})...")
             try:
                 self.model = WhisperModel(

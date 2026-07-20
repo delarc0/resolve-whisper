@@ -63,6 +63,25 @@ def resolve_script_lib() -> str:
     return "/opt/resolve/libs/Fusion/fusionscript.so"
 
 
+def add_cuda_dll_dir():
+    """Make CTranslate2 (the faster-whisper GPU backend) find cuBLAS/cuDNN.
+
+    CTranslate2 needs those CUDA DLLs but does not look inside torch's bundle
+    on its own. The CUDA torch wheel ships them in `torch/lib`, so on Windows
+    we add that dir to the DLL search path before the model loads. No-op off
+    Windows or when torch isn't installed. Safe to call more than once.
+    """
+    if not IS_WIN:
+        return
+    try:
+        import torch
+        lib = os.path.join(os.path.dirname(torch.__file__), "lib")
+        if os.path.isdir(lib) and hasattr(os, "add_dll_directory"):
+            os.add_dll_directory(lib)
+    except Exception:
+        pass  # falls back to CPU at model load if CUDA libs can't be found
+
+
 def bootstrap_resolve_env():
     """Make `import DaVinciResolveScript` work without the launcher exporting
     env vars.
