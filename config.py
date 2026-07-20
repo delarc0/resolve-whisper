@@ -1,11 +1,10 @@
 import json
 import logging
 import os
-import sys
+
+from platforminfo import IS_MAC, IS_WIN, IS_LINUX  # noqa: F401
 
 log = logging.getLogger(__name__)
-
-IS_MAC = sys.platform == "darwin"
 
 _APP_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(_APP_DIR, "caption_config.json")

@@ -459,8 +459,9 @@ def write_srt(segments: list, output_path: str, fps: float = 24.0, strip_punctua
         if not content.endswith("\n"):
             f.write("\n")
 
-    # Count captions (count SRT sequence numbers: lines that are just a number)
-    count = sum(1 for line in content.split("\n") if line.strip().isdigit())
+    # Count caption blocks (blank-line separated). Counting digit-only lines
+    # would also match caption text that happens to be a bare number.
+    count = sum(1 for block in content.strip().split("\n\n") if block.strip())
     log.info(f"Wrote {count} captions to {output_path}")
     return True
 

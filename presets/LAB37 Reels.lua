@@ -1,46 +1,23 @@
 -- LAB37 Reels -- single-line SRT, 1-3 words, no punctuation, Swedish
---
--- max-words=3 (not 4): 4 reads as dense on a 9x16 reel even when it fits
--- max-chars. Combined with the connector-suppression in srt.py, output
--- variation lands naturally at 1-3 words depending on speech rhythm.
-local PRESET_ARGS = "--language sv --max-words 3 --max-chars 22 --max-lines 1 --strip-punctuation"
+LAB37_TOOL = "Reels"
+LAB37_ARGS = "--language sv --max-words 3 --max-chars 22 --max-lines 1 --strip-punctuation"
 
-print("[LAB37 Reels] Starting...")
-
-local RESOLVE_API = "/Library/Application Support/Blackmagic Design/DaVinci Resolve/Developer/Scripting"
-local RESOLVE_LIB = "/Applications/DaVinci Resolve/DaVinci Resolve.app/Contents/Libraries/Fusion/fusionscript.so"
-
-local lf = io.open(RESOLVE_LIB, "r")
-if lf then lf:close() else
-    print("[LAB37 Reels] ERROR: fusionscript.so not found at: " .. RESOLVE_LIB)
-    print("[LAB37 Reels] Is Resolve installed in a nonstandard location?")
-    return
-end
-
-local script_dir = debug.getinfo(1, "S").source:sub(2):match("(.*/)") or "./"
-local pointer = script_dir .. "resolve_whisper_path.txt"
-print("[LAB37 Reels] Looking for pointer at: " .. pointer)
-
-local f = io.open(pointer, "r")
+-- Resolve the install dir from the pointer file next to this preset, then
+-- hand off to the shared cross-platform launcher (see preset_launch.lua).
+local sep = package.config:sub(1, 1)
+local script_dir = debug.getinfo(1, "S").source:sub(2):match("(.*[/\\])") or ("." .. sep)
+local f = io.open(script_dir .. "resolve_whisper_path.txt", "r")
 if not f then
-    print("[LAB37 Reels] ERROR: pointer file not found")
+    print("[LAB37 " .. LAB37_TOOL .. "] ERROR: pointer file not found (re-run setup)")
     return
 end
-local app_dir = f:read("*all"):gsub("%s+$", "")
+LAB37_APP_DIR = f:read("*all"):gsub("%s+$", "")
 f:close()
-print("[LAB37 Reels] App dir: " .. app_dir)
-
-local cmd = string.format(
-    [[(export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"; ]] ..
-    [[export RESOLVE_SCRIPT_API=%q; ]] ..
-    [[export RESOLVE_SCRIPT_LIB=%q; ]] ..
-    [[export PYTHONPATH="$RESOLVE_SCRIPT_API/Modules"; ]] ..
-    [[cd %q && %q %q %s) > %q 2>&1 &]],
-    RESOLVE_API, RESOLVE_LIB,
-    app_dir, app_dir .. "/.venv/bin/python3", app_dir .. "/caption.py",
-    PRESET_ARGS, "/tmp/resolve_whisper.log"
-)
-
-print("[LAB37 Reels] Launching subprocess (output: /tmp/resolve_whisper.log)")
-os.execute(cmd)
-print("[LAB37 Reels] Subprocess launched in background.")
+local launcher = LAB37_APP_DIR .. sep .. "preset_launch.lua"
+local lf = io.open(launcher, "r")
+if not lf then
+    print("[LAB37 " .. LAB37_TOOL .. "] ERROR: launcher missing at " .. launcher .. " (re-run setup)")
+    return
+end
+lf:close()
+dofile(launcher)

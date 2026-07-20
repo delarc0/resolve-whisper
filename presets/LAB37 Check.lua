@@ -1,46 +1,23 @@
 -- LAB37 Check -- runs the pre-flight check (env + Resolve + Audio Only preset)
--- Run this after install or after a Resolve update to confirm the tool is healthy.
-local PRESET_ARGS = "--check"
+LAB37_TOOL = "Check"
+LAB37_ARGS = "--check"
 
-print("[LAB37 Check] Starting...")
-
-local RESOLVE_API = "/Library/Application Support/Blackmagic Design/DaVinci Resolve/Developer/Scripting"
-local RESOLVE_LIB = "/Applications/DaVinci Resolve/DaVinci Resolve.app/Contents/Libraries/Fusion/fusionscript.so"
-
-local lf = io.open(RESOLVE_LIB, "r")
-if lf then lf:close() else
-    print("[LAB37 Check] ERROR: fusionscript.so not found at: " .. RESOLVE_LIB)
-    print("[LAB37 Check] Is Resolve installed in a nonstandard location?")
-    return
-end
-
-local script_dir = debug.getinfo(1, "S").source:sub(2):match("(.*/)") or "./"
-local pointer = script_dir .. "resolve_whisper_path.txt"
-print("[LAB37 Check] Looking for pointer at: " .. pointer)
-
-local f = io.open(pointer, "r")
+-- Resolve the install dir from the pointer file next to this preset, then
+-- hand off to the shared cross-platform launcher (see preset_launch.lua).
+local sep = package.config:sub(1, 1)
+local script_dir = debug.getinfo(1, "S").source:sub(2):match("(.*[/\\])") or ("." .. sep)
+local f = io.open(script_dir .. "resolve_whisper_path.txt", "r")
 if not f then
-    print("[LAB37 Check] ERROR: pointer file not found")
+    print("[LAB37 " .. LAB37_TOOL .. "] ERROR: pointer file not found (re-run setup)")
     return
 end
-local app_dir = f:read("*all"):gsub("%s+$", "")
+LAB37_APP_DIR = f:read("*all"):gsub("%s+$", "")
 f:close()
-print("[LAB37 Check] App dir: " .. app_dir)
-
-local python = app_dir .. "/.venv/bin/python3"
-local caption = app_dir .. "/caption.py"
-local log_path = "/tmp/resolve_whisper_check.log"
-
-local cmd = string.format(
-    [[(export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"; ]] ..
-    [[export RESOLVE_SCRIPT_API=%q; ]] ..
-    [[export RESOLVE_SCRIPT_LIB=%q; ]] ..
-    [[export PYTHONPATH="$RESOLVE_SCRIPT_API/Modules"; ]] ..
-    [[cd %q && %q %q %s) > %q 2>&1 &]],
-    RESOLVE_API, RESOLVE_LIB,
-    app_dir, python, caption, PRESET_ARGS, log_path
-)
-
-print("[LAB37 Check] Launching subprocess (output: " .. log_path .. ")")
-os.execute(cmd)
-print("[LAB37 Check] Subprocess launched in background. Check the log file when done.")
+local launcher = LAB37_APP_DIR .. sep .. "preset_launch.lua"
+local lf = io.open(launcher, "r")
+if not lf then
+    print("[LAB37 " .. LAB37_TOOL .. "] ERROR: launcher missing at " .. launcher .. " (re-run setup)")
+    return
+end
+lf:close()
+dofile(launcher)

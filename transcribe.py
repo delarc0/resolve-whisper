@@ -262,15 +262,10 @@ class Transcriber:
     @staticmethod
     def _find_tool(name: str):
         """Locate ffmpeg/ffprobe even when Resolve launches us with a bare
-        PATH (Homebrew lives outside the default)."""
-        import shutil
-        found = shutil.which(name)
-        if found:
-            return found
-        for candidate in (f"/opt/homebrew/bin/{name}", f"/usr/local/bin/{name}"):
-            if os.path.exists(candidate):
-                return candidate
-        return None
+        PATH (Homebrew/ffmpeg live outside the default). Delegates to the
+        platform boundary."""
+        import platforminfo
+        return platforminfo.find_tool(name)
 
     @classmethod
     def _load_mono_16k_ffmpeg(cls, audio_path: str):

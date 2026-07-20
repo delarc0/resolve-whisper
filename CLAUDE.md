@@ -5,6 +5,12 @@ audio via the render queue, transcribes locally with Whisper (mlx-whisper on
 Apple Silicon, faster-whisper on Windows), writes an SRT, and imports it into
 Resolve's Media Pool.
 
+Cross-platform (Mac + Windows), one codebase. All OS differences route
+through `platforminfo.py`; the Mac and Windows transcription backends split
+at a single branch in `transcribe.py` and share no fragile code, so a change
+to one platform can't destabilize the other. Mac is the primary/most-tested
+platform.
+
 ## Installing this for a user?
 
 Follow **AGENT_INSTALL.md** - a step-by-step runbook written for AI agents
@@ -12,13 +18,24 @@ assisting non-technical users. Human-facing instructions live in README.md.
 
 ## Architecture (Mac is the primary platform)
 
-- `presets/*.lua` - Resolve menu entries (Workspace > Scripts > Edit);
-  self-contained launchers that shell out to caption.py with preset flags
+- `presets/*.lua` - Resolve menu entries (Workspace > Scripts > Edit); thin:
+  each sets tool/args, reads the pointer file for the install dir, then
+  dofile()s the shared launcher
+- `preset_launch.lua` - the one cross-platform launcher (lives in the app
+  dir, NOT Scripts/Edit, so it isn't its own menu entry). Runs caption.py
+  detached with the preset's args; no env exports (caption.py bootstraps the
+  Resolve module path itself), so no fragile per-OS shell quoting
+- `platforminfo.py` - single OS boundary: flags, Resolve scripts/API/lib
+  paths, ffmpeg/ffprobe finder, and `bootstrap_resolve_env()` which sets
+  RESOLVE_SCRIPT_* and adds the Modules dir to sys.path
 - `caption.py` - the pipeline: render timeline audio ("Audio Only" preset) →
   transcribe → SRT → auto-import to Media Pool. Also `--check` (pre-flight
-  health check) and `--file` (standalone, no Resolve) modes
-- `transcribe.py` - Whisper wrapper + silero-vad pre-pass (prevents
-  word-timestamp drift after pauses)
+  health check), `--file` (standalone, no Resolve), and `--dialog` (Custom
+  preset settings window) modes
+- `transcribe.py` - Whisper wrapper. Backend splits at ONE branch: mlx +
+  silero-vad pre-pass (Mac) vs faster-whisper with its built-in VAD
+  (Windows/other). The silero pre-pass and its ffmpeg/AAC decode fallback
+  are Mac-path-only
 - `srt.py` - word→caption chunking and SRT generation. Two chunkers: greedy
   (Reels, max_words > 0) and balanced (Auto/Podcast, max_words == 0) which
   splits at sentence/silence boundaries then picks break points by cost
@@ -35,10 +52,15 @@ assisting non-technical users. Human-facing instructions live in README.md.
   screenshots; Aqua renders wrong silently
 - `config.py` - defaults + `caption_config.json` generation
 
-Mac-only. The old Windows path (resolve_script.py + launcher_stub.py +
-setup.bat) was removed 2026-07-15: it ran Tk dialogs inside Resolve's process
-which freezes Resolve on macOS, and it had drifted from the hardened
-pipeline. Don't resurrect it.
+Cross-platform via one codebase (see the isolation note up top). Windows
+install is `setup.ps1`; Mac is `setup.sh`. The OLD Windows path
+(resolve_script.py + launcher_stub.py + setup.bat) was removed 2026-07-15
+because it ran Tk dialogs INSIDE Resolve's process (froze Resolve) and had
+drifted from the hardened pipeline. Don't resurrect that in-process design;
+the current Windows support reuses the same detached-subprocess pipeline as
+Mac, which is why it can't drift. Windows-specific gotcha: Cancel sends
+SIGTERM, which is a hard kill on Windows (no cleanup finally blocks), so a
+cancelled Windows run may leave a render job behind - acceptable for now.
 
 Caption placement: SRT is imported to the Media Pool and placed on a fresh
 subtitle track via `AppendToTimeline` - which returns None even on success

@@ -1,11 +1,12 @@
-# Resolve Whisper - dependencies
+# Resolve Whisper - Windows / non-Mac dependencies
 #
-# Mac (Apple Silicon) is the supported platform:
-#   pip install -r requirements-mac.txt
+# Windows install is handled by setup.ps1, which installs torch first
+# (CUDA build if an NVIDIA GPU is present, otherwise CPU) and then this file.
+# The Windows backend is faster-whisper, which ships its own VAD, so the
+# Mac-only silero-vad + mlx packages are not needed here.
 #
-# The entries below are only for running `caption.py --file` on a
-# non-Mac machine (no Resolve integration there):
-#   pip install torch
+# Manual install:
+#   pip install torch            # or the CUDA wheel, see setup.ps1
 #   pip install -r requirements.txt
 
 faster-whisper>=1.0.0

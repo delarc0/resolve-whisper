@@ -11,9 +11,9 @@ Built by LAB37 // lab37.tools
 ### With an AI assistant (recommended for non-technical users)
 
 If you have Claude (or another AI assistant that can run commands on your
-Mac), paste this and let it do the work:
+computer), paste this and let it do the work:
 
-> Please install the LAB37 Resolve Whisper caption tool on this Mac.
+> Please install the LAB37 Resolve Whisper caption tool on this computer.
 > Clone https://github.com/delarc0/resolve-whisper and follow the runbook in
 > AGENT_INSTALL.md exactly. I'm not technical, so do everything you can
 > yourself and guide me in simple steps when you need me.
@@ -23,7 +23,16 @@ Mac), paste this and let it do the work:
 2. Open Terminal in this folder and run: `./setup.sh`
 3. Wait for it to finish (downloads a ~3 GB AI model on first run)
 
-Setup installs everything and adds the scripts to Resolve automatically.
+### Windows (10/11)
+1. Install Python 3.10+ from python.org (tick "Add python.exe to PATH")
+2. Open PowerShell in this folder and run:
+   `powershell -ExecutionPolicy Bypass -File .\setup.ps1`
+3. Wait for it to finish (downloads a ~3 GB AI model on first run)
+
+Windows runs the faster-whisper backend on **CPU** for now (works on any PC;
+slower than a GPU on long timelines). GPU acceleration on Windows is a planned
+follow-up. Setup installs everything and adds the scripts to Resolve
+automatically on both platforms.
 
 ---
 
@@ -166,9 +175,9 @@ SRT file appears next to the source file.
 
 - DaVinci Resolve Studio 18+ (scripting API is Studio only; Resolve 21 supported)
 - Python 3.10+
-- Apple Silicon Mac (the mlx Whisper backend is Metal-only)
+- Mac (Apple Silicon, mlx backend, GPU) or Windows 10/11 (faster-whisper
+  backend, CPU for now; GPU support in progress)
 - ~3 GB disk space (AI model + dependencies)
-- ~2-3 GB VRAM during transcription
 
 ---
 

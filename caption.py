@@ -256,8 +256,15 @@ def _spawn_progress_ui():
     try:
         # Reset status file so the new UI process doesn't pick up a stale "done"
         _write_status("starting", "Connecting to Resolve...")
+        # On Windows use pythonw.exe for the Tk window so it doesn't flash a
+        # console. Falls back to the normal interpreter if pythonw is absent.
+        ui_python = sys.executable
+        if sys.platform == "win32":
+            candidate = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
+            if os.path.exists(candidate):
+                ui_python = candidate
         return subprocess.Popen(
-            [sys.executable, ui_script, STATUS_FILE],
+            [ui_python, ui_script, STATUS_FILE],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=True,
@@ -304,6 +311,8 @@ def _run_settings_dialog():
 def get_resolve():
     """Connect to a running DaVinci Resolve Studio instance."""
     try:
+        import platforminfo
+        platforminfo.bootstrap_resolve_env()
         import DaVinciResolveScript as bmd
         resolve = bmd.scriptapp("Resolve")
         if resolve is None:
@@ -420,15 +429,30 @@ def _validate_audio_only_settings(settings: dict) -> list:
     if audio_key and not _is_truthy(settings[audio_key]):
         problems.append(f"{audio_key} is {settings[audio_key]!r}, want true")
 
-    # Audio container: Resolve reports audio format under different keys
-    # depending on version. We just look for evidence of WAV / PCM.
-    audio_codec = settings.get("AudioCodec", "")
-    if isinstance(audio_codec, str) and audio_codec and "pcm" not in audio_codec.lower() and "linearpcm" not in audio_codec.lower().replace(" ", ""):
-        # Don't fail outright on codec mismatch - Whisper handles many codecs
-        # via ffmpeg. Just warn through the problems list at info level.
-        log.info(f"Audio codec is {audio_codec!r} (PCM preferred but not required).")
-
     return problems
+
+
+def _audio_codec_warning(settings: dict) -> str:
+    """Return a warning string when the render audio codec isn't PCM/WAV, else "".
+
+    Non-PCM (e.g. Resolve 21's factory AAC) is not fatal - duration, VAD, and
+    transcription all decode via ffmpeg/ffprobe - but WAV skips those fallback
+    decodes, so it's worth surfacing instead of burying at info level.
+    """
+    if not isinstance(settings, dict):
+        return ""
+    audio_codec = settings.get("AudioCodec", "")
+    if (
+        isinstance(audio_codec, str)
+        and audio_codec
+        and "pcm" not in audio_codec.lower()
+        and "linearpcm" not in audio_codec.lower().replace(" ", "")
+    ):
+        return (
+            f"audio codec is {audio_codec!r} - works (decoded via ffmpeg), "
+            "but a WAV/PCM preset transcribes faster"
+        )
+    return ""
 
 
 def _expected_output_path(job_settings: dict, output_dir: str, fallback_name: str) -> str:
@@ -604,6 +628,9 @@ def render_audio(project, timeline, output_dir: str) -> str:
         _delete_job_if_ours(project, job_id, pre_existing_ids)
         _restore_deliver_state(project, saved_fmt, saved_mode)
         return None
+    codec_note = _audio_codec_warning(job_settings)
+    if codec_note:
+        log.warning(f"'{_AUDIO_PRESET_NAME}' preset: {codec_note}")
 
     log.info("Rendering timeline audio...")
     audio_path = None
@@ -1029,6 +1056,24 @@ def run_check_mode(args):
     failures = []
     warnings = []
 
+    # Write the check results to a dedicated file directly from Python. The
+    # Lua preset also redirects stdout to a log, but relying on that is
+    # fragile (Windows `start /b` redirection is unreliable), and installer
+    # agents are told to read resolve_whisper_check.log specifically. Owning
+    # the file here makes that instruction work on every platform.
+    check_log_path = os.path.join(tempfile.gettempdir(),
+                                  "resolve_whisper_check.log")
+    check_handler = None
+    try:
+        check_handler = logging.FileHandler(check_log_path, mode="w",
+                                            encoding="utf-8")
+        check_handler.setFormatter(
+            logging.Formatter("%(asctime)s [%(levelname)s] %(message)s",
+                              datefmt="%H:%M:%S"))
+        logging.getLogger().addHandler(check_handler)
+    except OSError:
+        check_handler = None  # non-fatal; stdout redirect still captures it
+
     def _row(name, ok, detail=""):
         prefix = "PASS" if ok else "FAIL"
         log.info(f"  [{prefix}] {name}{(' - ' + detail) if detail else ''}")
@@ -1079,6 +1124,8 @@ def run_check_mode(args):
 
     # 4. Resolve scripting module
     try:
+        import platforminfo
+        platforminfo.bootstrap_resolve_env()
         import DaVinciResolveScript as _bmd  # noqa: F401
         _row("DaVinciResolveScript importable", True)
     except Exception as e:
@@ -1146,6 +1193,13 @@ def run_check_mode(args):
                             )
                         else:
                             _row("'Audio Only' preset settings", True)
+                            codec_note = _audio_codec_warning(job_settings)
+                            if codec_note:
+                                log.info(f"  [WARN] 'Audio Only' preset codec - {codec_note}")
+                                warnings.append(
+                                    "For faster transcription, recreate the preset as WAV: "
+                                    "./.venv/bin/python create_audio_only_preset.py --force"
+                                )
                     else:
                         _row("'Audio Only' preset settings", False, "AddRenderJob returned no id")
                 finally:
@@ -1214,7 +1268,30 @@ def _open_folder(path: str):
         pass
 
 
+def _attach_windows_run_log():
+    """On Windows, own the run log from Python.
+
+    The Lua launcher discards shell output to NUL there (`start /b`
+    redirection to a real file is unreliable for a detached child), so we
+    write the run log ourselves. On Mac the launcher's stdout redirect owns
+    the log and this is a no-op, keeping the proven Mac path unchanged.
+    """
+    import platforminfo
+    if not platforminfo.IS_WIN:
+        return
+    try:
+        path = os.path.join(tempfile.gettempdir(), "resolve_whisper.log")
+        handler = logging.FileHandler(path, mode="w", encoding="utf-8")
+        handler.setFormatter(
+            logging.Formatter("%(asctime)s [%(levelname)s] %(message)s",
+                              datefmt="%H:%M:%S"))
+        logging.getLogger().addHandler(handler)
+    except OSError:
+        pass  # non-fatal; status JSON still drives the UI
+
+
 def main():
+    _attach_windows_run_log()
     parser = argparse.ArgumentParser(
         description="Resolve Whisper - AI caption generation",
         formatter_class=argparse.RawDescriptionHelpFormatter,
