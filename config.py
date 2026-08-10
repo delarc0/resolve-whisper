@@ -15,6 +15,9 @@ DEFAULT_CONFIG = {
     # Use KB-Whisper (KBLab Swedish fine-tune, ~47% lower WER on Swedish) when
     # the language is explicitly "sv". Auto/other languages always use large-v3.
     "use_kb_whisper": True,
+    # Path to a converted KB-Whisper MLX model (Mac). null = the default
+    # ~/.cache/lab37-whisper/kb-whisper-large-mlx if it exists.
+    "kb_whisper_mlx_path": None,
     "beam_size": 10,            # Windows/faster-whisper only; mlx (Mac) decodes greedily
     "initial_prompt": None,     # Context hint, e.g. "Intervju om ledarskap och projektledning."
     # Drop words below this Whisper confidence. 0.0 = off (default): Whisper
@@ -55,7 +58,8 @@ def _write_default_config():
 
 
 # Keys whose default is None but which accept a string when set.
-_NULLABLE_STR_KEYS = {"language", "initial_prompt", "output_dir"}
+_NULLABLE_STR_KEYS = {"language", "initial_prompt", "output_dir",
+                      "kb_whisper_mlx_path"}
 
 # Numeric keys that must stay positive / non-negative to make any sense.
 _POSITIVE_KEYS = {"max_chars_per_line", "max_lines", "min_duration_s",
@@ -178,7 +182,26 @@ else:
 # conversion; if it's blank or fails to load, Swedish falls back to large-v3
 # (config below stays valid, just without the accuracy bump).
 KB_WHISPER_CT2 = "KBLab/kb-whisper-large"
-KB_WHISPER_MLX = ""  # set to an MLX repo/path once converted (see docs)
+
+# Mac: KBLab publishes no MLX build, so the model has to be converted once
+# (tools/convert_kb_whisper_mlx.sh). Auto-detected here so the conversion
+# activates with no code edit; overridable with "kb_whisper_mlx_path" in
+# caption_config.json for a shared/network copy.
+KB_WHISPER_MLX_DEFAULT = os.path.expanduser(
+    "~/.cache/lab37-whisper/kb-whisper-large-mlx")
+
+
+def _kb_whisper_mlx() -> str:
+    path = cfg.get("kb_whisper_mlx_path") or KB_WHISPER_MLX_DEFAULT
+    path = os.path.expanduser(str(path))
+    # A directory alone isn't enough: a half-finished conversion would make
+    # every Swedish run fail instead of falling back.
+    if os.path.isdir(path) and (
+        os.path.exists(os.path.join(path, "weights.safetensors"))
+        or os.path.exists(os.path.join(path, "weights.npz"))
+    ):
+        return path
+    return ""
 
 
 def model_for_language(lang):
@@ -188,7 +211,7 @@ def model_for_language(lang):
     the knob is on, else the default large-v3 model for this platform.
     """
     if lang and str(lang).lower() == "sv" and cfg.get("use_kb_whisper", True):
-        kb = KB_WHISPER_MLX if IS_MAC else KB_WHISPER_CT2
+        kb = _kb_whisper_mlx() if IS_MAC else KB_WHISPER_CT2
         if kb:
             return kb
     return MODEL_SIZE
