@@ -55,6 +55,8 @@ def _acquire_run_lock() -> bool:
     breadcrumb for logs -- never as the liveness signal.
     """
     global _LOCK_FD
+    if _LOCK_FD is not None:
+        return True  # already held by this process; never orphan the old fd
     try:
         fd = os.open(LOCK_FILE, os.O_CREAT | os.O_RDWR, 0o644)
     except OSError as e:
@@ -139,6 +141,35 @@ def _is_own_srt(name: str) -> bool:
         import re
         _OWN_SRT_RE = re.compile(r" \d{8}-\d{6}\.srt$", re.IGNORECASE)
     return bool(_OWN_SRT_RE.search(name))
+
+
+def _sweep_stale_status_files(max_age_s: int = 86400):
+    """Delete leftover per-run status files from previous runs.
+
+    The status file carries the pid so a lingering progress window can't
+    adopt the next run's pid, but that means nothing overwrites the old
+    ones. Windows %TEMP% is never swept by the OS, so they would pile up
+    forever. Only our own prefix, only files older than a day, never the
+    one this run is using.
+    """
+    directory = os.path.dirname(STATUS_FILE)
+    keep = os.path.basename(STATUS_FILE)
+    cutoff = time.time() - max_age_s
+    try:
+        for name in os.listdir(directory):
+            if name == keep:
+                continue
+            if not (name.startswith("resolve_whisper_status.")
+                    and name.endswith(".json")):
+                continue
+            path = os.path.join(directory, name)
+            try:
+                if os.path.getmtime(path) < cutoff:
+                    os.unlink(path)
+            except OSError:
+                pass
+    except OSError:
+        pass
 
 
 def _default_output_dir() -> str:
@@ -302,6 +333,7 @@ def _spawn_progress_ui():
     if not os.path.exists(ui_script):
         return None
     try:
+        _sweep_stale_status_files()
         # Reset status file so the new UI process doesn't pick up a stale "done"
         _write_status("starting", "Connecting to Resolve...")
         # On Windows use pythonw.exe for the Tk window so it doesn't flash a
@@ -690,7 +722,11 @@ def _render_offset_s(job_settings: dict, timeline, fps: float,
                 timeline_dur = (int(end_frame) - int(start_frame)) / float(fps)
             except (TypeError, ValueError):
                 timeline_dur = 0.0
-            if timeline_dur > 0 and abs(audio_dur - timeline_dur) <= 1.0:
+            # Tolerance covers container/encoder padding only (a few
+            # frames), not a real in-point. A wider window suppressed
+            # genuine sub-second in-points.
+            tolerance = max(0.25, 3.0 / float(fps))
+            if timeline_dur > 0 and abs(audio_dur - timeline_dur) <= tolerance:
                 log.info("Rendered audio spans the whole timeline; "
                          "ignoring in/out marks for caption placement.")
                 return 0.0

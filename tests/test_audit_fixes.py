@@ -151,11 +151,63 @@ class TestRunLock(unittest.TestCase):
         self.assertTrue(_acquire_run_lock())
         _release_run_lock()
 
-    def test_live_lock_blocks(self):
+    def test_second_acquire_in_same_process_is_a_noop(self):
+        # Re-acquiring must NOT open a second fd: that would orphan the
+        # first one for the process lifetime with no way to release it.
         self.assertTrue(_acquire_run_lock())
-        # Holding the kernel lock, a second acquire must fail.
-        self.assertFalse(_acquire_run_lock())
+        self.assertTrue(_acquire_run_lock())  # same lock, still ours
         _release_run_lock()
+        self.assertIsNone(caption._LOCK_FD)
+
+    def test_other_process_is_blocked(self):
+        # The contract that matters: a DIFFERENT process cannot run while we
+        # hold the lock (flock is per-process, so this needs a real fork).
+        import subprocess
+        import sys as _sys
+        self.assertTrue(_acquire_run_lock())
+        try:
+            probe = (
+                "import sys; sys.path.insert(0, %r); "
+                "import caption; caption.LOCK_FILE = %r; "
+                "print('ACQUIRED' if caption._acquire_run_lock() else 'BLOCKED')"
+                % (os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                   self.lock_path)
+            )
+            out = subprocess.run([_sys.executable, "-c", probe],
+                                 capture_output=True, text=True, timeout=60)
+            self.assertIn("BLOCKED", out.stdout,
+                          f"second process was not blocked: {out.stdout}{out.stderr}")
+        finally:
+            _release_run_lock()
+
+    def test_lock_frees_when_holder_is_killed(self):
+        # A kernel lock dies with the process -- this is what removes the
+        # old "crashed run wedges the tool" failure mode entirely.
+        import subprocess
+        import sys as _sys
+        import time as _time
+        holder_src = (
+            "import sys, time; sys.path.insert(0, %r); "
+            "import caption; caption.LOCK_FILE = %r; "
+            "caption._acquire_run_lock(); print('HELD', flush=True); "
+            "time.sleep(60)"
+            % (os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+               self.lock_path)
+        )
+        holder = subprocess.Popen([_sys.executable, "-c", holder_src],
+                                  stdout=subprocess.PIPE, text=True)
+        try:
+            self.assertEqual(holder.stdout.readline().strip(), "HELD")
+            self.assertFalse(_acquire_run_lock(), "lock should be held")
+            holder.kill()
+            holder.wait(timeout=10)
+            _time.sleep(0.2)
+            self.assertTrue(_acquire_run_lock(),
+                            "SIGKILL must release the lock immediately")
+            _release_run_lock()
+        finally:
+            if holder.poll() is None:
+                holder.kill()
 
     def test_leftover_file_with_dead_pid_is_not_a_lock(self):
         # A file left by a crashed run holds no kernel lock, so the next run

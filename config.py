@@ -57,6 +57,12 @@ def _write_default_config():
 # Keys whose default is None but which accept a string when set.
 _NULLABLE_STR_KEYS = {"language", "initial_prompt", "output_dir"}
 
+# Numeric keys that must stay positive / non-negative to make any sense.
+_POSITIVE_KEYS = {"max_chars_per_line", "max_lines", "min_duration_s",
+                  "max_duration_s", "beam_size"}
+_NON_NEGATIVE_KEYS = {"max_words_per_caption", "gap_frames", "keep_srt_days",
+                      "min_word_probability"}
+
 
 def _coerce(key, value):
     """Return value if it is usable for `key`, else None to reject it.
@@ -67,22 +73,34 @@ def _coerce(key, value):
     "unset" idiom, so a user copying that pattern onto a numeric key is a
     realistic mistake, not an exotic one.
     """
+    import math
     default = DEFAULT_CONFIG[key]
     if key in _NULLABLE_STR_KEYS:
         return value if value is None or isinstance(value, str) else None
     if isinstance(default, bool):
         # bool first: bool is a subclass of int.
         return value if isinstance(value, bool) else None
-    if isinstance(default, int):
-        if isinstance(value, bool):
+
+    if isinstance(default, (int, float)) and not isinstance(default, bool):
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
             return None
-        if isinstance(value, int):
-            return value
-        if isinstance(value, float) and value.is_integer():
-            return int(value)
-        return None
-    if isinstance(default, float):
-        return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+        # json.load happily produces inf/nan from 1e400 / Infinity / NaN, and
+        # isinstance(inf, float) is True -- so a type check alone let them
+        # through to crash at SRT-write time, i.e. AFTER the render.
+        if not math.isfinite(value):
+            return None
+        # Zero/negative are type-valid but semantically broken (a negative
+        # max_chars_per_line silently yields one word per caption).
+        if key in _NON_NEGATIVE_KEYS and value < 0:
+            return None
+        if key in _POSITIVE_KEYS and value <= 0:
+            return None
+        if isinstance(default, int):
+            if isinstance(value, int):
+                return value
+            return int(value) if float(value).is_integer() else None
+        return float(value)
+
     if isinstance(default, str):
         return value if isinstance(value, str) else None
     return value

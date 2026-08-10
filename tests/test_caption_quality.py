@@ -70,6 +70,28 @@ class TestNumbersSurvivePunctuationStripping(unittest.TestCase):
     def test_word_internal_chars_kept(self):
         self.assertEqual(strip_punct_text("don't e-post"), "don't e-post")
 
+    def test_time_colon_survives(self):
+        # The first fix protected commas but split on ':' instead --
+        # "kl 14:30" became "kl 14 30". Same bug class, new separator.
+        self.assertEqual(strip_punct_text("Vi ses kl 14:30 i lokalen"),
+                         "Vi ses kl 14:30 i lokalen")
+
+    def test_swedish_colon_abbreviations(self):
+        self.assertEqual(strip_punct_text("S:t Eriksgatan 5"),
+                         "S:t Eriksgatan 5")
+        self.assertEqual(strip_punct_text("det var 5:e gången"),
+                         "det var 5:e gången")
+
+    def test_ratio_slash_survives(self):
+        self.assertEqual(strip_punct_text("resultatet blev 50/50"),
+                         "resultatet blev 50/50")
+
+    def test_input_sentinels_cannot_leak(self):
+        # The implementation uses private-use codepoints as markers; input
+        # containing them must not be able to forge a separator.
+        self.assertNotIn(",", strip_punct_text("ab"))
+        self.assertNotIn(".", strip_punct_text("xy"))
+
 
 class TestNoMalformedCues(unittest.TestCase):
     def setUp(self):

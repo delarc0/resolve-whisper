@@ -109,13 +109,21 @@ def _normalise_word_times(words: list) -> list:
     overlapping cues, zero-duration cues, and -- when the finished captions
     were sorted to compensate -- a reordered transcript.
     """
+    import math
     out = []
     prev_end = None
+    dropped = 0
     for w in words:
         try:
             start = float(w.start)
             end = float(w.end)
         except (TypeError, ValueError):
+            dropped += 1
+            continue
+        # NaN/inf would survive the float() call and then blow up in the
+        # millisecond rounding further down.
+        if not (math.isfinite(start) and math.isfinite(end)):
+            dropped += 1
             continue
         if prev_end is not None and start < prev_end:
             start = prev_end
@@ -124,6 +132,10 @@ def _normalise_word_times(words: list) -> list:
         out.append(_TimedWord(w.text, start, end,
                               getattr(w, "probability", 1.0)))
         prev_end = end
+    if dropped:
+        # Never drop words silently: that is the failure mode this module
+        # exists to prevent.
+        log.warning(f"Dropped {dropped} word(s) with unusable timestamps.")
     return out
 
 
@@ -512,6 +524,8 @@ def _greedy_captions(all_words: list, max_words: int, max_chars: int,
 # are listed explicitly in the keep-set below).
 _DEC_COMMA = ""
 _DEC_POINT = ""
+_SEP_COLON = ""
+_SEP_SLASH = ""
 
 
 def strip_punct_text(text: str) -> str:
@@ -528,17 +542,30 @@ def strip_punct_text(text: str) -> str:
         figure is both invisible in review and materially wrong.
     """
     import re
+    # Sentinels are private-use codepoints; strip any that arrived in the
+    # input so they can't be mistaken for our own markers.
+    text = text.replace(_DEC_COMMA, "").replace(_DEC_POINT, "")
+    text = text.replace(_SEP_COLON, "").replace(_SEP_SLASH, "")
     # En/em dashes separate words ("går—nu").
     text = re.sub(r"[–—]", " ", text)
-    # Protect decimal separators (Swedish "3,5" and thousands "1.500").
-    text = re.sub(r"(?<=\d)[.,](?=\d)",
-                  lambda m: _DEC_COMMA if m.group(0) == "," else _DEC_POINT,
-                  text)
-    # Replace (not delete) everything except word chars, whitespace,
-    # apostrophes, hyphens, percent and the decimal sentinels.
-    text = re.sub(rf"[^\w\s'’\-%{_DEC_COMMA}{_DEC_POINT}]", " ", text,
+    # Protect separators that live INSIDE a token. Removing them (or even
+    # replacing them with a space) changes the meaning:
+    #   "3,5 miljoner" / "1.500 kr"  decimals and thousands
+    #   "kl 14:30"                   times
+    #   "S:t Eriksgatan", "5:e"      Swedish colon abbreviations/ordinals
+    #   "50/50"                      ratios
+    _PROTECT = {",": _DEC_COMMA, ".": _DEC_POINT,
+                ":": _SEP_COLON, "/": _SEP_SLASH}
+    text = re.sub(r"(?<=\d)[.,](?=\d)", lambda m: _PROTECT[m.group(0)], text)
+    text = re.sub(r"(?<=\w)[:/](?=\w)", lambda m: _PROTECT[m.group(0)], text,
                   flags=re.UNICODE)
-    text = text.replace(_DEC_COMMA, ",").replace(_DEC_POINT, ".")
+    # Replace (not delete) everything except word chars, whitespace,
+    # apostrophes, hyphens, percent and the sentinels.
+    text = re.sub(
+        rf"[^\w\s'’\-%{_DEC_COMMA}{_DEC_POINT}{_SEP_COLON}{_SEP_SLASH}]",
+        " ", text, flags=re.UNICODE)
+    text = (text.replace(_DEC_COMMA, ",").replace(_DEC_POINT, ".")
+                .replace(_SEP_COLON, ":").replace(_SEP_SLASH, "/"))
     # Trim the keepers when they sit at word edges ("'hello-" -> "hello").
     words = [w.strip("'’-") for w in text.split()]
     return " ".join(w for w in words if w)

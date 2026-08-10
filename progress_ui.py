@@ -8,8 +8,8 @@ Styled per apps/DESIGN.md (LAB37 charcoal shell) via ui_theme. The progress
 bar is Frame-based: native ttk.Progressbar renders Aqua blue and ignores
 styling on macOS.
 
-Usage:
-    python progress_ui.py /tmp/resolve_whisper_status.json
+Usage (the path is always supplied by caption.py; it is per-run):
+    python progress_ui.py /tmp/resolve_whisper_status.<pid>.json
 """
 import json
 import os
@@ -27,7 +27,10 @@ except ImportError:
 import ui_theme as th
 
 
-DEFAULT_STATUS_FILE = os.path.join(tempfile.gettempdir(), "resolve_whisper_status.json")
+# Status files are per-run (resolve_whisper_status.<pid>.json) and the path
+# is always passed as argv by caption.py. There is no meaningful default any
+# more: polling a fixed name would read a stale file no run will update.
+DEFAULT_STATUS_FILE = None
 
 # Map internal stage names to user-friendly titles.
 _STAGE_TITLES = {
@@ -183,6 +186,10 @@ class ProgressUI:
             # to make the window vanish while the pipeline kept running,
             # taking the Cancel button with it.
             if time.time() - self.last_seen > self.STALE_AFTER_S:
+                if self._pid is None:
+                    # Never saw a single status: nothing to wait for.
+                    self._close()
+                    return
                 if self._process_alive():
                     self.last_seen = time.time()  # still working; keep waiting
                 else:
@@ -321,9 +328,16 @@ class ProgressUI:
 
 
 def main():
-    status_file = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_STATUS_FILE
+    if len(sys.argv) > 1:
+        status_file = sys.argv[1]
+    else:
+        sys.stderr.write(
+            "usage: progress_ui.py <status-file>\n"
+            "(caption.py passes the per-run status file path)\n")
+        return 2
     ProgressUI(status_file).run()
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main() or 0)
