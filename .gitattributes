@@ -1,0 +1,4 @@
+# Keep line endings uniform. The repo drifted to a CRLF/LF mix, which made
+# small diffs look like whole-file rewrites.
+* text=auto eol=lf
+*.png binary

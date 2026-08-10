@@ -138,6 +138,7 @@ Every row must say **PASS**. Common failures:
 - `mlx_whisper importable - FAIL` (Mac) / `faster_whisper importable - FAIL`
   (Windows) → re-run setup (`./setup.sh` on Mac, `.\setup.ps1` on Windows)
   and read its output.
+- If `./setup.sh` reports `permission denied`, run `bash setup.sh` instead.
 - No log file at all → the menu entry didn't run; re-run setup so the Lua
   launchers get copied, restart Resolve, try again.
 

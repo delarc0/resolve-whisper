@@ -35,6 +35,13 @@ if (-not $python) {
     exit 1
 }
 $pyVer = & $python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"
+if (-not $pyVer) {
+    # The Microsoft Store "app execution alias" stub matches Get-Command but
+    # produces no output. Fail with the friendly message, not a raw exception.
+    Write-Host "  ERROR: Python 3 not found (the Microsoft Store stub does not count)."
+    Write-Host "  Install Python 3.10+ from python.org and tick 'Add python.exe to PATH'."
+    exit 1
+}
 $maj, $min = $pyVer.Split(".")
 if ([int]$maj -lt 3 -or ([int]$maj -eq 3 -and [int]$min -lt 10)) {
     Write-Host "  ERROR: Python 3.10+ required. Found: $pyVer"
@@ -106,6 +113,17 @@ $ResolveScripts = Join-Path $env:APPDATA "Blackmagic Design\DaVinci Resolve\Supp
 
 Write-Host "  [3/4] Installing Lua launchers to Resolve..."
 New-Item -ItemType Directory -Force -Path $ResolveScripts | Out-Null
+# Remove legacy installs. The old Windows installer put an in-process Tk stub
+# in Scripts\Utility; it runs inside Resolve and freezes it, and Resolve 21
+# shows Utility scripts in the menu again, so users can click the wrong entry.
+$legacyUtility = Join-Path $env:APPDATA "Blackmagic Design\DaVinci Resolve\Support\Fusion\Scripts\Utility"
+foreach ($stale in @(
+    (Join-Path $legacyUtility "LAB37 Resolve Whisper.py"),
+    (Join-Path $legacyUtility "resolve_whisper_path.txt"),
+    (Join-Path $ResolveScripts "_launcher.lua")
+)) {
+    Remove-Item -Force -ErrorAction SilentlyContinue $stale
+}
 foreach ($p in @("LAB37 Reels.lua", "LAB37 Podcast.lua", "LAB37 Auto.lua", "LAB37 Custom.lua", "LAB37 Check.lua")) {
     Copy-Item -Force (Join-Path $AppDir "presets\$p") $ResolveScripts
 }
@@ -118,9 +136,20 @@ $captionsDir = Join-Path ([Environment]::GetFolderPath("Desktop")) "Captions"
 New-Item -ItemType Directory -Force -Path $captionsDir | Out-Null
 
 Write-Host "  [4/4] Downloading AI model (first time only, ~3 GB)..."
+# Pre-fetch the model the shipped presets actually use. The Swedish presets
+# route to KB-Whisper, so fetching only large-v3 left a second ~3 GB download
+# to happen mid-run, after the timeline audio had already been rendered.
 $dl = @"
+import sys
+sys.path.insert(0, r'$AppDir')
 from faster_whisper import WhisperModel
-WhisperModel('large-v3', device='cpu', compute_type='int8')
+import config
+names = {config.MODEL_SIZE}
+if config.cfg.get('use_kb_whisper', True):
+    names.add(config.KB_WHISPER_CT2)
+for n in sorted(names):
+    print('  downloading', n)
+    WhisperModel(n, device='cpu', compute_type='int8')
 "@
 & $venvPy -c $dl 2>$null
 if ($LASTEXITCODE -eq 0) { Write-Host "         Model ready." } else { Write-Host "         Model will download on first use instead." }

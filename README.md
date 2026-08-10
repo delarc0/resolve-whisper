@@ -95,10 +95,40 @@ After running once, a `caption_config.json` file appears in the install folder. 
 | `max_lines` | `1` | Lines per subtitle block |
 | `min_duration_s` | `1.0` | Shortest a subtitle stays on screen (seconds) |
 | `max_duration_s` | `7.0` | Longest a subtitle stays on screen (seconds) |
-| `keep_srt_days` | `30` | Auto-delete this tool's old SRTs from the output folder (0 = never) |
+| `max_words_per_caption` | `0` | `0` = fill lines normally. `1-5` = karaoke-style word chunks (what Reels uses) |
+| `keep_srt_days` | `30` | Auto-delete this tool's old SRTs (0 = never). Only ever runs in the default `~/Desktop/Captions` folder, never in a custom `output_dir` |
 | `uppercase` | `true` | ALL CAPS caption text (Resolve has no caps transform) |
+| `use_kb_whisper` | `true` | Use KB-Whisper for Swedish (see below). Set `false` to force stock large-v3 |
+| `initial_prompt` | `null` | Context hint for Whisper, e.g. names/jargon in the video |
+| `output_dir` | `null` | Where SRTs are saved. `null` = `~/Desktop/Captions` (Resolve mode) |
+| `beam_size` | `10` | Windows only; the Mac backend decodes greedily |
+| `gap_frames` | `2` | Gap between consecutive subtitles, in frames |
 
-Most people won't need to change anything.
+Most people won't need to change anything. A setting with an invalid value is
+ignored (with a warning in the log) rather than crashing the run.
+
+### Swedish accuracy: KB-Whisper
+
+For Swedish, the tool uses **KB-Whisper** ([KBLab](https://huggingface.co/KBLab/kb-whisper-large),
+the National Library of Sweden), a large-v3 fine-tune trained on ~50,000 hours
+of Swedish that reports roughly **47% lower word error rate** than stock
+large-v3 on Swedish benchmarks. It kicks in only when the language is
+explicitly Swedish (the Reels and Podcast presets, or `language: "sv"`);
+auto-detect and other languages stay on large-v3, which is better for them.
+
+Status by platform:
+- **Windows:** active. KBLab publishes CTranslate2 weights, which the Windows
+  backend loads directly.
+- **Mac:** falls back to large-v3 for now. There is no official MLX build of
+  KB-Whisper yet, so Swedish on Mac uses the stock model until one is
+  converted. Transcription still works; it just doesn't get the accuracy bump.
+
+### Where captions land
+
+Captions are placed at the **in-point** you set, not at the top of the
+timeline. If you render an in/out range, the tool shifts the subtitles to
+match. If it can't determine the range with confidence, it places from the
+timeline start rather than risk shifting them wrongly.
 
 ---
 

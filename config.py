@@ -54,16 +54,75 @@ def _write_default_config():
         log.debug(f"Could not write default config: {e}")
 
 
+# Keys whose default is None but which accept a string when set.
+_NULLABLE_STR_KEYS = {"language", "initial_prompt", "output_dir"}
+
+
+def _coerce(key, value):
+    """Return value if it is usable for `key`, else None to reject it.
+
+    A bad type used to reach the chunker and raise mid-run -- AFTER the
+    timeline audio had been rendered -- so the user lost the render and got
+    a traceback. The generated config file itself teaches `null` as the
+    "unset" idiom, so a user copying that pattern onto a numeric key is a
+    realistic mistake, not an exotic one.
+    """
+    default = DEFAULT_CONFIG[key]
+    if key in _NULLABLE_STR_KEYS:
+        return value if value is None or isinstance(value, str) else None
+    if isinstance(default, bool):
+        # bool first: bool is a subclass of int.
+        return value if isinstance(value, bool) else None
+    if isinstance(default, int):
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, int):
+            return value
+        if isinstance(value, float) and value.is_integer():
+            return int(value)
+        return None
+    if isinstance(default, float):
+        return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+    if isinstance(default, str):
+        return value if isinstance(value, str) else None
+    return value
+
+
 def load_config() -> dict:
     _write_default_config()
     config = dict(DEFAULT_CONFIG)
-    if os.path.exists(CONFIG_PATH):
-        try:
-            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-                saved = json.load(f)
-            config.update(saved)
-        except Exception as e:
-            log.warning(f"Failed to load config: {e}")
+    if not os.path.exists(CONFIG_PATH):
+        return config
+
+    try:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+            saved = json.load(f)
+    except Exception as e:
+        # Name the file and the reason: silently reverting every setting
+        # reads to the user as "my settings do nothing".
+        log.warning(f"Could not read {CONFIG_PATH} ({e}); using defaults for "
+                    "ALL settings. Fix the JSON or delete the file to "
+                    "regenerate it.")
+        return config
+
+    if not isinstance(saved, dict):
+        log.warning(f"{CONFIG_PATH} is not a JSON object; using defaults.")
+        return config
+
+    for key, value in saved.items():
+        if key not in DEFAULT_CONFIG:
+            log.debug(f"Ignoring unknown config key '{key}'.")
+            continue
+        coerced = _coerce(key, value)
+        # None is only acceptable where None is a meaningful value
+        # ("language": null = auto-detect). An explicit null on a numeric
+        # key is the exact case that used to crash mid-run.
+        if coerced is None and not (value is None and key in _NULLABLE_STR_KEYS):
+            log.warning(f"Config '{key}': {value!r} is not a valid "
+                        f"{type(DEFAULT_CONFIG[key]).__name__}; "
+                        f"using default {DEFAULT_CONFIG[key]!r}.")
+            continue
+        config[key] = coerced
     return config
 
 

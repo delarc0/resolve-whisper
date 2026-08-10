@@ -63,6 +63,21 @@ def resolve_script_lib() -> str:
     return "/opt/resolve/libs/Fusion/fusionscript.so"
 
 
+def log_dir() -> str:
+    """Directory for the tool's log files.
+
+    Deliberately NOT tempfile.gettempdir() on Mac: a GUI-launched Resolve
+    hands its children a private TMPDIR (/var/folders/.../T), so a log
+    written there is invisible to anyone following the documented
+    `cat /tmp/resolve_whisper*.log`. The Lua launcher already redirects
+    stdout to /tmp, so both halves agree here.
+    """
+    if IS_WIN:
+        import tempfile
+        return os.environ.get("TEMP") or tempfile.gettempdir()
+    return "/tmp"
+
+
 def add_cuda_dll_dir():
     """Make CTranslate2 (the faster-whisper GPU backend) find cuBLAS/cuDNN.
 

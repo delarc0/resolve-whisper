@@ -50,7 +50,11 @@ assisting non-technical users. Human-facing instructions live in README.md.
   Aqua-safe widgets (macOS ignores colors on native tk.Button/OptionMenu,
   so buttons/selects/toggles are Label/Frame-based). Verify UI changes with
   screenshots; Aqua renders wrong silently
-- `config.py` - defaults + `caption_config.json` generation
+- `config.py` - defaults, `caption_config.json` generation, per-key type
+  validation (a bad value used to crash AFTER the render), and
+  `model_for_language()`: Swedish routes to KB-Whisper (KBLab, ~47% lower
+  WER on Swedish), everything else to large-v3. Mac has no MLX build of
+  KB-Whisper yet and falls back automatically
 
 Cross-platform via one codebase (see the isolation note up top). Windows
 install is `setup.ps1`; Mac is `setup.sh`. The OLD Windows path
@@ -68,6 +72,28 @@ subtitle track via `AppendToTimeline` - which returns None even on success
 the timeline lock. Subtitle track STYLE (font/size/stroke) has no scripting
 API at all; users style the track once per timeline in the Inspector. ALL
 CAPS therefore lives in the text (`uppercase` config).
+
+## Invariants worth not breaking
+
+These were each a real bug found in the 2026-07 audit; the comments at each
+site explain why. Summary so they aren't "simplified" away:
+
+- **The run lock is a kernel lock** (flock/msvcrt) on a held-open fd, not a
+  file's existence. That is what survives SIGKILL. Do not go back to
+  PID-liveness probing: `os.kill(pid, 0)` TERMINATES on Windows.
+- **The status file is per-run** (`...status.<pid>.json`). A shared path let
+  a lingering window adopt the next run's pid and cancel it.
+- **Caption placement offset**: `SelectAllFrames` wins over MarkIn, and a
+  duration cross-check guards the rest. Shifting captions wrongly is worse
+  than not shifting them, so anything ambiguous returns 0.
+- **Never fuse or drop caption text**: punctuation removal replaces with a
+  space (not nothing) and protects decimals - "3,5 miljoner" must not become
+  "35 miljoner". Line overflow is never truncated; losing a word is worse
+  than an extra line.
+- **Timing is normalised at the WORD level** before chunking, and the
+  zero-duration guard compares MILLISECONDS (the SRT's resolution).
+- **SRT cleanup only sweeps the tool's own default folder**, and logs every
+  filename it deletes.
 
 ## Development
 

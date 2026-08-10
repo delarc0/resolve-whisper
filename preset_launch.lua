@@ -60,12 +60,18 @@ if is_win then
         PY, CAPTION, ARGS, LOGFILE
     )
 else
+    -- Lua's %q escapes for LUA, not for sh: it leaves $ and ` live, so a path
+    -- containing them would be word-split or command-substituted. Single-quote
+    -- instead (nothing is special inside '...' except ' itself).
+    local function shq(s)
+        return "'" .. tostring(s):gsub("'", "'\\''") .. "'"
+    end
     -- Homebrew ffmpeg lives outside Resolve's PATH; export it so mlx_whisper
     -- and the ffprobe fallback can find it. Trailing & detaches.
     cmd = string.format(
         [[(export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"; ]] ..
-        [[cd %q && %q %q %s) > %q 2>&1 &]],
-        app_dir, PY, CAPTION, ARGS, LOGFILE
+        [[cd %s && %s %s %s) > %s 2>&1 &]],
+        shq(app_dir), shq(PY), shq(CAPTION), ARGS, shq(LOGFILE)
     )
 end
 

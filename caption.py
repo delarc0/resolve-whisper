@@ -24,72 +24,107 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 
-STATUS_FILE = os.path.join(tempfile.gettempdir(), "resolve_whisper_status.json")
+# Per-run status file: the progress UI is told its exact path via argv. A
+# single shared path let a lingering window from a previous run adopt the
+# NEXT run's pid and cancel it (cancel -> relaunch is a common sequence).
+STATUS_FILE = os.path.join(tempfile.gettempdir(),
+                           f"resolve_whisper_status.{os.getpid()}.json")
 LOCK_FILE = os.path.join(tempfile.gettempdir(), "resolve_whisper.lock")
+
+# Held open for the process lifetime; the kernel drops the lock when this
+# process dies for ANY reason, which is what makes the scheme crash-proof.
+_LOCK_FD = None
 
 
 def _acquire_run_lock() -> bool:
-    """Claim the single-run lock or report another run is in progress.
+    """Claim the single-run lock, or report that another run holds it.
 
-    Atomic: O_CREAT|O_EXCL closes the check-then-write race between two
-    near-simultaneous launches. A stale lock (recorded PID dead) is removed
-    and acquisition retried once. PermissionError from the liveness probe
-    means the PID exists under another user -> treat as alive.
+    Uses a KERNEL-held advisory lock (fcntl.flock / msvcrt.locking) on a
+    long-lived fd rather than the existence of a file. The kernel releases it
+    when the process exits however it exits -- normal return, exception,
+    SIGKILL, TerminateProcess, power loss -- so a crashed or force-quit run
+    can never wedge the tool. That also removes the PID-liveness probe
+    entirely, which had three separate failure modes:
+      - Windows had no safe probe (os.kill(pid, 0) TERMINATES the target), so
+        it fell back to a 2h age heuristic that locked the tool out for two
+        hours after any hard-killed run;
+      - a recycled PID could make a dead lock look alive forever;
+      - the create-then-write gap and the unlink-by-path retry let two runs
+        acquire the "exclusive" lock simultaneously.
+    The pid is still written into the file, but only as a human-readable
+    breadcrumb for logs -- never as the liveness signal.
     """
-    for _attempt in (1, 2):
+    global _LOCK_FD
+    try:
+        fd = os.open(LOCK_FILE, os.O_CREAT | os.O_RDWR, 0o644)
+    except OSError as e:
+        log.warning(f"Could not open lock file ({e}); proceeding without lock.")
+        return True
+
+    try:
+        if sys.platform == "win32":
+            import msvcrt
+            # Lock 1 byte, non-blocking. Raises OSError if already held.
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except (OSError, ImportError) as e:
+        # ImportError: no locking primitive available -> don't block the user.
+        if isinstance(e, ImportError):
+            log.warning("No file-locking primitive available; proceeding without lock.")
+            _LOCK_FD = fd
+            return True
+        holder = ""
         try:
-            fd = os.open(LOCK_FILE, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(str(os.getpid()))
-            return True
-        except FileExistsError:
-            if sys.platform == "win32":
-                # os.kill(pid, 0) TERMINATES the target on Windows, so probe
-                # by lock age instead: runs never legitimately exceed 2h.
-                try:
-                    age = time.time() - os.path.getmtime(LOCK_FILE)
-                except OSError:
-                    continue  # lock vanished between open and stat; retry
-                if age < 7200:
-                    log.error("Another caption run appears to be in progress. Wait for it to finish.")
-                    return False
-                try:
-                    os.unlink(LOCK_FILE)
-                except OSError:
-                    pass
-                continue
-            try:
-                with open(LOCK_FILE, "r", encoding="utf-8") as f:
-                    other_pid = int(f.read().strip())
-                os.kill(other_pid, 0)  # signal 0 == probe; raises if not alive
-                log.error(f"Another caption run is in progress (pid {other_pid}). Wait for it to finish or cancel it.")
-                return False
-            except PermissionError:
-                # Process exists under another user: definitely alive.
-                log.error("Another caption run is in progress (different user). Wait for it to finish.")
-                return False
-            except (ValueError, ProcessLookupError, OSError):
-                # Stale or garbage lock: remove it and retry the atomic open.
-                try:
-                    os.unlink(LOCK_FILE)
-                except OSError:
-                    pass
-                continue
-        except OSError as e:
-            log.warning(f"Could not create lock file ({e}); proceeding without lock.")
-            return True
-    return False
+            os.lseek(fd, 0, os.SEEK_SET)
+            holder = os.read(fd, 32).decode("utf-8", "replace").strip()
+        except OSError:
+            pass
+        os.close(fd)
+        if holder:
+            log.error(f"Another caption run is in progress (pid {holder}). "
+                      "Wait for it to finish or cancel it from its progress window.")
+        else:
+            log.error("Another caption run is in progress. "
+                      "Wait for it to finish or cancel it from its progress window.")
+        return False
+
+    # We own it: record our pid for the log breadcrumb.
+    try:
+        os.ftruncate(fd, 0)
+        os.lseek(fd, 0, os.SEEK_SET)
+        os.write(fd, str(os.getpid()).encode("utf-8"))
+    except OSError:
+        pass
+    _LOCK_FD = fd
+    return True
 
 
 def _release_run_lock():
-    """Release the run lock if we own it. Best-effort; never raises."""
+    """Release the run lock. Best-effort; never raises.
+
+    Closing the fd drops the kernel lock. The file itself is left behind on
+    purpose: unlinking it races with another process that already has it
+    open, and an empty leftover file is harmless (the lock is the fd, not
+    the file's existence).
+    """
+    global _LOCK_FD
+    if _LOCK_FD is None:
+        return
     try:
-        with open(LOCK_FILE, "r", encoding="utf-8") as f:
-            owner = int(f.read().strip())
-        if owner == os.getpid():
-            os.unlink(LOCK_FILE)
-    except (OSError, ValueError):
+        if sys.platform == "win32":
+            import msvcrt
+            try:
+                os.lseek(_LOCK_FD, 0, os.SEEK_SET)
+                msvcrt.locking(_LOCK_FD, msvcrt.LK_UNLCK, 1)
+            except OSError:
+                pass
+        os.close(_LOCK_FD)
+    except OSError:
         pass
+    finally:
+        _LOCK_FD = None
 
 
 # Our SRTs end in " YYYYMMDD-HHMMSS.srt" (see run_resolve_mode). The cleanup
@@ -106,16 +141,28 @@ def _is_own_srt(name: str) -> bool:
     return bool(_OWN_SRT_RE.search(name))
 
 
+def _default_output_dir() -> str:
+    return os.path.join(os.path.expanduser("~"), "Desktop", "Captions")
+
+
 def _cleanup_old_srts(output_dir: str, keep_days: int):
     """Delete OUR old .srt files in output_dir. Non-fatal.
 
-    Only files matching the tool's own " YYYYMMDD-HHMMSS.srt" stamp are
-    candidates; foreign SRTs in a shared folder are never touched.
+    Two guards, because this deletes files:
+      - only names carrying the tool's own " YYYYMMDD-HHMMSS.srt" stamp, and
+      - only inside the tool's OWN output folder. The stamp alone is not
+        proof of authorship ("Kundleverans FINAL 20250612-093000.srt" matches
+        it), and output_dir is user-configurable -- pointing it at a delivery
+        folder would have quietly destroyed month-old client subtitles.
+    Every deleted filename is logged so the action is auditable.
     """
     if keep_days <= 0 or not os.path.isdir(output_dir):
         return
+    if os.path.normpath(output_dir) != os.path.normpath(_default_output_dir()):
+        log.debug("Custom output dir; skipping automatic SRT cleanup.")
+        return
     cutoff = time.time() - keep_days * 86400
-    removed = 0
+    removed = []
     try:
         for name in os.listdir(output_dir):
             if not _is_own_srt(name):
@@ -124,14 +171,15 @@ def _cleanup_old_srts(output_dir: str, keep_days: int):
             try:
                 if os.path.getmtime(path) < cutoff:
                     os.unlink(path)
-                    removed += 1
+                    removed.append(name)
             except OSError:
                 pass
     except OSError as e:
         log.debug(f"Could not list output dir for cleanup: {e}")
         return
     if removed:
-        log.info(f"Cleaned up {removed} SRT file(s) older than {keep_days} days.")
+        log.info(f"Cleaned up {len(removed)} SRT file(s) older than "
+                 f"{keep_days} days: {', '.join(sorted(removed))}")
 
 
 def _start_progress_estimator(audio_duration_s: float):
@@ -361,7 +409,11 @@ def get_timeline_info(resolve):
 
 _AUDIO_PRESET_NAME = "Audio Only"
 _RENDER_TIMEOUT_S = 1800  # 30 min upper bound; long debates land well under this
-_AUDIO_EXTS = (".wav", ".flac", ".mp3", ".aac", ".m4a", ".aif", ".aiff")
+# .mp4/.mov are here because Resolve 21's factory "Audio Only" preset writes
+# AAC into an .mp4 container -- without them the file-resolution fallback
+# misses the render entirely and the run dies after doing all the work.
+_AUDIO_EXTS = (".wav", ".flac", ".mp3", ".aac", ".m4a", ".aif", ".aiff",
+               ".mp4", ".mov")
 
 
 def _safe(call, *args, **kwargs):
@@ -522,7 +574,8 @@ def _set_wav_format_compat(project):
     return None
 
 
-def _restore_deliver_state(project, saved_fmt: dict, saved_mode):
+def _restore_deliver_state(project, saved_fmt: dict, saved_mode,
+                           saved_target_dir=None, saved_custom_name=None):
     """Put the Deliver page back to roughly what the user had before our run.
 
     We can restore format/codec/mode (the API exposes getters) but not the
@@ -539,27 +592,68 @@ def _restore_deliver_state(project, saved_fmt: dict, saved_mode):
             _safe(project.SetCurrentRenderFormatAndCodec, fmt, codec)
     if saved_mode is not None:
         _safe(project.SetCurrentRenderMode, saved_mode)
-    # Clear our temp-dir leftovers so the Deliver page doesn't show
-    # /var/folders/... in the path field.
-    _safe(project.SetRenderSettings, {"TargetDir": "", "CustomName": ""})
+    # Put the user's own output location back. Blanking these unconditionally
+    # (the old behaviour) destroyed the user's Deliver page path and filename
+    # on every run AND every health check -- our temp dir was not the only
+    # thing being cleared. If we never captured a snapshot, leave the fields
+    # alone rather than guessing.
+    if saved_target_dir is not None or saved_custom_name is not None:
+        _safe(project.SetRenderSettings, {
+            "TargetDir": saved_target_dir or "",
+            "CustomName": saved_custom_name or "",
+        })
 
 
-def _render_offset_s(job_settings: dict, timeline, fps: float) -> float:
+def _audio_duration_s(path: str) -> float:
+    """Duration of a rendered audio file in seconds, or 0.0 if unknown.
+
+    Used to cross-check what the render ACTUALLY covered. ffprobe reads any
+    container Resolve emits (including the AAC/.mp4 the 21 factory preset
+    produces, which libsndfile cannot open).
+    """
+    try:
+        import platforminfo
+        ffprobe = platforminfo.find_tool("ffprobe")
+        if not ffprobe:
+            return 0.0
+        proc = subprocess.run(
+            [ffprobe, "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", path],
+            capture_output=True, text=True, timeout=60,
+        )
+        return max(float(proc.stdout.strip()), 0.0)
+    except Exception:
+        return 0.0
+
+
+def _render_offset_s(job_settings: dict, timeline, fps: float,
+                     audio_path: str = None) -> float:
     """Seconds between the timeline start and the start of the rendered audio.
 
-    When the user sets in/out points, Resolve renders only that range, so the
-    audio (and every Whisper timestamp derived from it) is zero-based at the
-    IN point. Resolve maps an imported SRT's 00:00:00 to the timeline start,
-    so without this offset every caption lands at the top of the timeline
-    instead of over the speech.
+    When the render covers an in/out RANGE, the audio (and every Whisper
+    timestamp derived from it) is zero-based at the IN point, while Resolve
+    maps an imported SRT's 00:00:00 to the TIMELINE start. Without this
+    offset every caption lands at the top of the timeline instead of over
+    the speech.
 
-    The render job's MarkIn is authoritative (it's what actually got
-    rendered); timeline.GetMarkInOut() is the fallback for API versions that
-    don't report MarkIn on the job. Returns 0.0 when the whole timeline was
-    rendered or the offset can't be determined.
+    Deciding the offset is subtle, because a job dict can carry MarkIn/
+    MarkOut that the render IGNORED:
+      - "SelectAllFrames": True means exactly that (Resolve's own docs:
+        "the settings MarkIn and MarkOut are ignored"). Shifting then would
+        corrupt captions that were already correct, so it wins outright.
+      - Otherwise MarkIn is used, but only after a duration cross-check:
+        if the rendered audio is as long as the whole timeline, the range
+        was not applied whatever the marks say.
+    Anything ambiguous returns 0.0 -- placing captions from the timeline
+    start is the recoverable failure; shifting them wrongly is not.
     """
     if not fps or fps <= 0:
         return 0.0
+
+    if isinstance(job_settings, dict):
+        for key in ("SelectAllFrames", "selectAllFrames"):
+            if job_settings.get(key):
+                return 0.0
 
     start_frame = _safe(timeline.GetStartFrame, _default=None)
     if start_frame is None:
@@ -572,26 +666,35 @@ def _render_offset_s(job_settings: dict, timeline, fps: float) -> float:
                 mark_in = job_settings[key]
                 break
 
-    if mark_in is None:
-        marks = _safe(timeline.GetMarkInOut, _default=None)
-        if isinstance(marks, dict):
-            # {'video': {'in': int, 'out': int}, 'audio': {...}}
-            for track_kind in ("video", "audio"):
-                entry = marks.get(track_kind)
-                if isinstance(entry, dict) and entry.get("in") is not None:
-                    mark_in = entry["in"]
-                    break
-
+    # No MarkIn on the job means we cannot know what range was rendered.
+    # timeline.GetMarkInOut() is NOT a safe fallback: it reports the LIVE
+    # marks (which the user may have changed during a long render) and its
+    # frame base is ambiguous versus GetStartFrame.
     try:
         offset_frames = int(mark_in) - int(start_frame)
     except (TypeError, ValueError):
         return 0.0
 
-    # Negative means no in-point (or a mark reported in a different frame
-    # base); trust nothing and place from the timeline start.
+    # Negative means no in-point, or marks in a different frame base.
     if offset_frames <= 0:
         return 0.0
-    return offset_frames / float(fps)
+    offset = offset_frames / float(fps)
+
+    # Cross-check against the audio we actually got: if it spans the whole
+    # timeline, the marks were not applied and shifting would be wrong.
+    if audio_path:
+        audio_dur = _audio_duration_s(audio_path)
+        end_frame = _safe(timeline.GetEndFrame, _default=None)
+        if audio_dur > 0 and end_frame is not None:
+            try:
+                timeline_dur = (int(end_frame) - int(start_frame)) / float(fps)
+            except (TypeError, ValueError):
+                timeline_dur = 0.0
+            if timeline_dur > 0 and abs(audio_dur - timeline_dur) <= 1.0:
+                log.info("Rendered audio spans the whole timeline; "
+                         "ignoring in/out marks for caption placement.")
+                return 0.0
+    return offset
 
 
 def render_audio(project, timeline, output_dir: str, fps: float = 0.0):
@@ -645,6 +748,21 @@ def render_audio(project, timeline, output_dir: str, fps: float = 0.0):
     existing_jobs = _safe(project.GetRenderJobList, _default=[]) or []
     pre_existing_ids = {j.get("JobId") for j in existing_jobs if isinstance(j, dict) and j.get("JobId")}
 
+    # There is no getter for the Deliver page's output path/filename, but a
+    # throwaway probe job reports them -- so snapshot via one, then delete
+    # it. Without this the restore blanked the user's own output location on
+    # every run and every health check.
+    saved_target_dir = None
+    saved_custom_name = None
+    probe_id = _safe(project.AddRenderJob)
+    if probe_id:
+        for j in (_safe(project.GetRenderJobList, _default=[]) or []):
+            if isinstance(j, dict) and j.get("JobId") == probe_id:
+                saved_target_dir = j.get("TargetDir")
+                saved_custom_name = j.get("CustomName")
+                break
+        _delete_job_if_ours(project, probe_id, pre_existing_ids)
+
     log.info(f"Loading '{_AUDIO_PRESET_NAME}' preset...")
     if not _safe(project.LoadRenderPreset, _AUDIO_PRESET_NAME):
         log.error(f"LoadRenderPreset('{_AUDIO_PRESET_NAME}') failed.")
@@ -659,7 +777,8 @@ def render_audio(project, timeline, output_dir: str, fps: float = 0.0):
     job_id = _safe(project.AddRenderJob)
     if not job_id:
         log.error("AddRenderJob returned no id.")
-        _restore_deliver_state(project, saved_fmt, saved_mode)
+        _restore_deliver_state(project, saved_fmt, saved_mode,
+                               saved_target_dir, saved_custom_name)
         return None, 0.0
 
     # Validate the queued job actually exports audio (catches a tampered preset).
@@ -676,7 +795,8 @@ def render_audio(project, timeline, output_dir: str, fps: float = 0.0):
         )
         log.error("Recreate it: python caption.py --check")
         _delete_job_if_ours(project, job_id, pre_existing_ids)
-        _restore_deliver_state(project, saved_fmt, saved_mode)
+        _restore_deliver_state(project, saved_fmt, saved_mode,
+                               saved_target_dir, saved_custom_name)
         return None, 0.0
     codec_note = _audio_codec_warning(job_settings)
     if codec_note:
@@ -745,11 +865,16 @@ def render_audio(project, timeline, output_dir: str, fps: float = 0.0):
             return None, 0.0
 
         # How far into the timeline this audio starts (in/out range renders
-        # are zero-based at the IN point). Prefer the pre-render job settings,
-        # which still carry MarkIn; the post-render copy can drop it.
-        offset_s = _render_offset_s(job_settings_post or job_settings, timeline, fps)
-        if offset_s <= 0:
-            offset_s = _render_offset_s(job_settings, timeline, fps)
+        # are zero-based at the IN point). Merge both job snapshots: the
+        # post-render copy can drop MarkIn, the pre-render one can predate a
+        # setting. SelectAllFrames is a safety guard, so honour it if EITHER
+        # snapshot reports it -- a wrong shift is worse than no shift.
+        merged_job = dict(job_settings or {})
+        merged_job.update(job_settings_post or {})
+        for key in ("SelectAllFrames", "selectAllFrames"):
+            if (job_settings or {}).get(key) or (job_settings_post or {}).get(key):
+                merged_job[key] = True
+        offset_s = _render_offset_s(merged_job, timeline, fps, audio_path)
         if offset_s > 0:
             log.info(f"In-point offset: captions shift +{offset_s:.2f}s to match the timeline.")
 
@@ -766,7 +891,8 @@ def render_audio(project, timeline, output_dir: str, fps: float = 0.0):
         raise
     finally:
         _delete_job_if_ours(project, job_id, pre_existing_ids)
-        _restore_deliver_state(project, saved_fmt, saved_mode)
+        _restore_deliver_state(project, saved_fmt, saved_mode,
+                               saved_target_dir, saved_custom_name)
 
 
 def run_resolve_mode(args):
@@ -880,7 +1006,7 @@ def run_resolve_mode(args):
 
         output_dir = args.output_dir or cfg["output_dir"]
         if not output_dir:
-            output_dir = os.path.join(os.path.expanduser("~"), "Desktop", "Captions")
+            output_dir = _default_output_dir()
         os.makedirs(output_dir, exist_ok=True)
         _cleanup_old_srts(output_dir, int(cfg.get("keep_srt_days", 30) or 0))
 
@@ -928,7 +1054,28 @@ def run_resolve_mode(args):
             pool_items = _safe(media_pool.ImportMedia, [srt_path])
             imported_to_pool = bool(pool_items)
 
+        # AppendToTimeline targets the project's CURRENT timeline, but our
+        # guard/AddTrack/verify all use the handle captured before the
+        # (minutes-long) transcription. If the user switched timelines in
+        # the meantime we would add a track to one timeline and append the
+        # captions to another, stacking onto someone else's subtitles.
+        same_timeline = True
         if imported_to_pool:
+            current_tl = _safe(project.GetCurrentTimeline)
+            if current_tl is not None:
+                our_id = _safe(timeline.GetUniqueId)
+                cur_id = _safe(current_tl.GetUniqueId)
+                if our_id and cur_id and our_id != cur_id:
+                    # Try to put the user's original timeline back; if that
+                    # fails, fall through to the Media Pool message rather
+                    # than writing to the wrong timeline.
+                    same_timeline = bool(_safe(project.SetCurrentTimeline, timeline))
+                    if not same_timeline:
+                        log.info("Timeline changed during the run; leaving the "
+                                 "SRT in the Media Pool instead of guessing.")
+            if not same_timeline:
+                imported_to_pool = True  # keep the Media Pool fallback path
+        if imported_to_pool and same_timeline:
             existing_sub_tracks = _safe(timeline.GetTrackCount, "subtitle", _default=0) or 0
             if existing_sub_tracks == 0:
                 _safe(timeline.AddTrack, "subtitle")
@@ -1123,7 +1270,8 @@ def run_check_mode(args):
     # fragile (Windows `start /b` redirection is unreliable), and installer
     # agents are told to read resolve_whisper_check.log specifically. Owning
     # the file here makes that instruction work on every platform.
-    check_log_path = os.path.join(tempfile.gettempdir(),
+    import platforminfo
+    check_log_path = os.path.join(platforminfo.log_dir(),
                                   "resolve_whisper_check.log")
     check_handler = None
     try:
@@ -1212,7 +1360,7 @@ def run_check_mode(args):
     # 6. Output dir writable
     output_dir = (
         args.output_dir
-        or os.path.join(os.path.expanduser("~"), "Desktop", "Captions")
+        or _default_output_dir()
     )
     try:
         os.makedirs(output_dir, exist_ok=True)
@@ -1227,6 +1375,21 @@ def run_check_mode(args):
     if project:
         saved_fmt = _safe(project.GetCurrentRenderFormatAndCodec, _default={}) or {}
         saved_mode = _safe(project.GetCurrentRenderMode)
+        # Snapshot the user's output path/filename before the probe below
+        # overwrites TargetDir -- a health check must not edit their project.
+        saved_target_dir = None
+        saved_custom_name = None
+        _probe_existing = _safe(project.GetRenderJobList, _default=[]) or []
+        _probe_ids = {j.get("JobId") for j in _probe_existing
+                      if isinstance(j, dict) and j.get("JobId")}
+        _probe_id = _safe(project.AddRenderJob)
+        if _probe_id:
+            for j in (_safe(project.GetRenderJobList, _default=[]) or []):
+                if isinstance(j, dict) and j.get("JobId") == _probe_id:
+                    saved_target_dir = j.get("TargetDir")
+                    saved_custom_name = j.get("CustomName")
+                    break
+            _delete_job_if_ours(project, _probe_id, _probe_ids)
         try:
             presets = project.GetRenderPresetList() or []
             if _AUDIO_PRESET_NAME in presets:
@@ -1301,7 +1464,8 @@ def run_check_mode(args):
                 except Exception as e:
                     _row("Create 'Audio Only' preset", False, str(e))
         finally:
-            _restore_deliver_state(project, saved_fmt, saved_mode)
+            _restore_deliver_state(project, saved_fmt, saved_mode,
+                               saved_target_dir, saved_custom_name)
 
     log.info("")
     if failures:
@@ -1342,7 +1506,7 @@ def _attach_windows_run_log():
     if not platforminfo.IS_WIN:
         return
     try:
-        path = os.path.join(tempfile.gettempdir(), "resolve_whisper.log")
+        path = os.path.join(platforminfo.log_dir(), "resolve_whisper.log")
         handler = logging.FileHandler(path, mode="w", encoding="utf-8")
         handler.setFormatter(
             logging.Formatter("%(asctime)s [%(levelname)s] %(message)s",

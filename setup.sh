@@ -53,6 +53,14 @@ python3 -c "import tkinter" 2>/dev/null && echo "  tkinter OK" || echo "  tkinte
 APP_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 echo "  [1/4] Creating virtual environment..."
+# A venv records absolute paths, so one created under a different path (the
+# folder was moved/renamed) is broken. Probe it and rebuild rather than
+# failing halfway through -- "re-run setup" is the documented repair, so it
+# has to actually repair.
+if [ -d "$APP_DIR/.venv" ] && ! "$APP_DIR/.venv/bin/python3" -c "import sys" >/dev/null 2>&1; then
+    echo "         Existing environment is stale (folder moved?); rebuilding..."
+    rm -rf "$APP_DIR/.venv"
+fi
 if [ ! -d "$APP_DIR/.venv" ]; then
     python3 -m venv "$APP_DIR/.venv"
 else
@@ -60,9 +68,9 @@ else
 fi
 
 echo "  [2/4] Installing dependencies..."
-"$APP_DIR/.venv/bin/pip" install --quiet --upgrade pip
+"$APP_DIR/.venv/bin/python3" -m pip install --quiet --upgrade pip
 # Single source of truth for deps is requirements-mac.txt
-"$APP_DIR/.venv/bin/pip" install --quiet -r "$APP_DIR/requirements-mac.txt"
+"$APP_DIR/.venv/bin/python3" -m pip install --quiet -r "$APP_DIR/requirements-mac.txt"
 
 "$APP_DIR/.venv/bin/python3" -c "import mlx_whisper, silero_vad" || {
     echo "  ERROR: Dependencies failed to install."

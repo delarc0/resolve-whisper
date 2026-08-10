@@ -16,9 +16,13 @@ log = logging.getLogger(__name__)
 # Note: "typ" removed -- it is a real Swedish word ("type/kind of")
 # Note: "you know" removed -- fullmatch on single words can never match it
 # Note: "oh" removed -- it carries meaning in English ("Oh no", "Oh really?")
+# Note: "alltså" removed -- it means "thus/therefore", not a pure filler.
+#       Deleting it also deleted the sentence-ending punctuation attached to
+#       it, which merged two sentences into one caption stretch. The slangy
+#       "asså" stays.
 FILLER_WORDS = re.compile(
     r"(um|uh|uhm|hmm|ah|eh|"
-    r"liksom|asså|alltså|öh|äh)",
+    r"liksom|asså|öh|äh)",
     re.IGNORECASE,
 )
 
@@ -62,13 +66,26 @@ def clean_word(text: str) -> str:
     stripped = text.strip()
     if not stripped:
         return ""
-    # Strip Whisper annotations like [Music], [Applause], [inaudible]
-    if stripped.startswith("[") and stripped.endswith("]"):
+
+    # Whisper annotations: [Music], [Applause], (skratt), and the same with
+    # trailing punctuation ("[Musik],"). Test the token with surrounding
+    # punctuation removed, otherwise "[Musik]," failed the endswith check
+    # and leaked "Musik]," into the caption.
+    core = stripped.strip(".,!?;:…\"'")
+    if len(core) >= 2 and core[0] in "[(" and core[-1] in "])":
         return ""
-    # Remove stray brackets/question-mark artifacts
+
+    # Remove stray bracket artifacts
     stripped = stripped.strip("[]")
     if not stripped:
         return ""
+
+    # A token with no word characters at all is an artifact, not a word
+    # (bare "-", "...", "♪"). Left in, it becomes a caption whose text is
+    # empty once punctuation is stripped.
+    if not any(ch.isalnum() for ch in stripped):
+        return ""
+
     lower = stripped.lower().strip(".,!?;:")
     if FILLER_WORDS.fullmatch(lower):
         return ""
@@ -182,6 +199,20 @@ class Transcriber:
                     except Exception as cpu_err:
                         log.error(f"CPU fallback also failed: {cpu_err}")
                         raise
+                elif self.model_name != _config.MODEL_SIZE:
+                    # Swedish KB-Whisper couldn't load (first-run download
+                    # failed, disk full, HF unreachable). Fall back to the
+                    # stock model rather than losing the whole run -- this
+                    # mirrors the Mac path, and Windows is where KB-Whisper
+                    # is actually active.
+                    log.warning(f"KB-Whisper load failed ({e}); "
+                                f"falling back to {_config.MODEL_SIZE}.")
+                    self.model_name = _config.MODEL_SIZE
+                    self.model = WhisperModel(
+                        self.model_name,
+                        device=_config.DEVICE,
+                        compute_type=_config.COMPUTE_TYPE,
+                    )
                 else:
                     raise
         log.info("Model loaded.")

@@ -75,11 +75,28 @@ class TestRenderOffset(unittest.TestCase):
         tl = FakeTimeline(start_frame=86400)
         self.assertEqual(caption._render_offset_s({"MarkIn": 0}, tl, 24.0), 0.0)
 
-    def test_falls_back_to_timeline_marks(self):
+    def test_live_timeline_marks_are_NOT_used(self):
+        # GetMarkInOut reports the LIVE marks (the user can change them
+        # during a 30-minute render) and its frame base is ambiguous versus
+        # GetStartFrame. Guessing from it risks shifting captions that were
+        # correct, so a job without MarkIn must yield no shift.
         tl = FakeTimeline(start_frame=0,
                           marks={"video": {"in": 250, "out": 500}})
-        off = caption._render_offset_s({}, tl, 25.0)
-        self.assertAlmostEqual(off, 10.0, places=6)
+        self.assertEqual(caption._render_offset_s({}, tl, 25.0), 0.0)
+
+    def test_select_all_frames_wins_over_markin(self):
+        # Resolve: "when SelectAllFrames is True the settings MarkIn and
+        # MarkOut are ignored" -- the whole timeline was rendered, so
+        # shifting would corrupt captions that were already correct.
+        tl = FakeTimeline(start_frame=86400)
+        job = {"SelectAllFrames": True, "MarkIn": 86400 + 24 * 300}
+        self.assertEqual(caption._render_offset_s(job, tl, 24.0), 0.0)
+
+    def test_markin_still_applies_when_select_all_frames_false(self):
+        tl = FakeTimeline(start_frame=86400)
+        job = {"SelectAllFrames": False, "MarkIn": 86400 + 240}
+        self.assertAlmostEqual(caption._render_offset_s(job, tl, 24.0), 10.0,
+                               places=6)
 
     def test_zero_fps_is_safe(self):
         tl = FakeTimeline(start_frame=0)

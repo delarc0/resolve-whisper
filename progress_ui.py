@@ -94,6 +94,11 @@ class ProgressUI:
         self.last_seen = time.time()
         self._closing = False
         self._cancelling = False
+        # Latched on the first status read. A lingering window must never
+        # act on a pid that isn't the run it was opened for: cancel ->
+        # relaunch is a common sequence, and the old shared status file let
+        # the dead window's Cancel/X kill the NEW run.
+        self._pid = None
 
         self.root = tk.Tk()
         self.root.title("LAB37 TOOLS: Whisper")
@@ -147,31 +152,82 @@ class ProgressUI:
         if self._closing:
             return
         try:
-            mtime = os.path.getmtime(self.status_file)
-        except FileNotFoundError:
-            mtime = 0
-
-        if mtime and mtime > self.last_mtime:
-            self.last_mtime = mtime
-            self.last_seen = time.time()
             try:
-                with open(self.status_file, "r") as f:
-                    status = json.load(f)
-                self._apply_status(status)
-            except (json.JSONDecodeError, FileNotFoundError, OSError):
-                pass
+                mtime = os.path.getmtime(self.status_file)
+            except (FileNotFoundError, OSError):
+                mtime = 0
 
-        # Auto-close if silent too long
-        if time.time() - self.last_seen > self.STALE_AFTER_S:
-            self._close()
-            return
+            status = None
+            if mtime and mtime > self.last_mtime:
+                self.last_mtime = mtime
+                self.last_seen = time.time()
+                try:
+                    with open(self.status_file, "r") as f:
+                        status = json.load(f)
+                except (json.JSONDecodeError, FileNotFoundError, OSError, ValueError):
+                    status = None
+
+            if isinstance(status, dict):
+                pid = status.get("pid")
+                if self._pid is None:
+                    self._pid = pid
+                elif pid and pid != self._pid:
+                    # A different run owns this file now; this window belongs
+                    # to a run that is gone. Leave without touching anything.
+                    self._close()
+                    return
+                self._apply_status(status)
+
+            # Silent too long: only close if the run really is gone. A long
+            # blocking Resolve call (or the machine sleeping mid-render) used
+            # to make the window vanish while the pipeline kept running,
+            # taking the Cancel button with it.
+            if time.time() - self.last_seen > self.STALE_AFTER_S:
+                if self._process_alive():
+                    self.last_seen = time.time()  # still working; keep waiting
+                else:
+                    self.title_label.config(text="Lost contact", fg=th.RED)
+                    self.detail_label.config(
+                        text="The caption process stopped unexpectedly. "
+                             "Check the log for details.")
+                    self.bar.set(100, color=th.RED)
+                    self.cancel_button.set_enabled(False)
+                    self.root.after(self.ERROR_LINGER_MS, self._close)
+                    return
+        except Exception:
+            # A malformed payload must never stop the poll loop: the window
+            # would sit on screen forever with no updates and no auto-close.
+            pass
 
         self.root.after(self.POLL_INTERVAL_MS, self._tick)
 
+    def _process_alive(self) -> bool:
+        """Is the caption process still running? Unknown counts as alive."""
+        if not self._pid:
+            return True
+        try:
+            pid = int(self._pid)
+        except (TypeError, ValueError):
+            return True
+        if sys.platform == "win32":
+            # os.kill(pid, 0) TERMINATES on Windows; never probe that way.
+            return True
+        try:
+            os.kill(pid, 0)
+            return True
+        except ProcessLookupError:
+            return False
+        except (PermissionError, OSError):
+            return True
+
     def _apply_status(self, status: dict):
+        # Coerce: a foreign or older leftover file could carry a non-string
+        # stage, and the title lookup below would raise mid-callback.
         stage = status.get("stage", "")
+        stage = stage if isinstance(stage, str) else ""
         progress = status.get("progress", -1)
         message = status.get("message", "")
+        message = message if isinstance(message, str) else ""
 
         # While cancelling, ignore non-terminal updates: the estimator
         # thread keeps writing "transcribing" until the SIGTERM lands, which
@@ -220,11 +276,21 @@ class ProgressUI:
         caption script's 'error' status drive the auto-close so the user
         sees the cancellation acknowledgement.
         """
-        try:
-            with open(self.status_file, "r", encoding="utf-8") as f:
-                pid = json.load(f).get("pid")
-        except (OSError, json.JSONDecodeError):
-            pid = None
+        # Idempotent: an impatient second click (the red X is not gated by
+        # the disabled button) delivered a second SIGTERM, which landed
+        # inside the cleanup finally-blocks and left the render job queued
+        # and the Deliver page pointing at a temp dir.
+        if self._cancelling:
+            return
+
+        # Only ever signal the pid this window latched onto at startup.
+        pid = self._pid
+        if pid is None:
+            try:
+                with open(self.status_file, "r", encoding="utf-8") as f:
+                    pid = json.load(f).get("pid")
+            except (OSError, json.JSONDecodeError, ValueError):
+                pid = None
 
         self._cancelling = True
         self.title_label.config(text="Cancelling...", fg=th.FG)

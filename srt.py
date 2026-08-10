@@ -86,6 +86,73 @@ _SOLO_DURATION = 0.45   # word held this long = emphasized -> own caption
 _SOLO_PAUSE = 0.25      # silence this long on both sides = isolated -> own caption
 
 
+class _TimedWord:
+    """Lightweight stand-in used when word timings need rewriting.
+
+    The chunkers only ever read .text/.start/.end, so this is enough and
+    avoids mutating the caller's Whisper objects.
+    """
+    __slots__ = ("text", "start", "end", "probability")
+
+    def __init__(self, text, start, end, probability=1.0):
+        self.text = text
+        self.start = start
+        self.end = end
+        self.probability = probability
+
+
+def _normalise_word_times(words: list) -> list:
+    """Force word stamps to be monotonic and non-inverted.
+
+    Whisper (both backends) occasionally returns a word that starts before
+    the previous one ended, or start == end. Left alone these produce
+    overlapping cues, zero-duration cues, and -- when the finished captions
+    were sorted to compensate -- a reordered transcript.
+    """
+    out = []
+    prev_end = None
+    for w in words:
+        try:
+            start = float(w.start)
+            end = float(w.end)
+        except (TypeError, ValueError):
+            continue
+        if prev_end is not None and start < prev_end:
+            start = prev_end
+        if end < start:
+            end = start
+        out.append(_TimedWord(w.text, start, end,
+                              getattr(w, "probability", 1.0)))
+        prev_end = end
+    return out
+
+
+def _merge_zero_duration(captions: list) -> list:
+    """Remove cues that would still write as zero-duration.
+
+    Only reachable when several words share one timestamp so tightly that
+    the clamps cannot separate them at millisecond resolution. Merging the
+    text into a neighbour keeps every word instead of emitting a cue that
+    strict SRT parsers reject.
+    """
+    if len(captions) < 2:
+        return captions
+    out = []
+    for i, cap in enumerate(captions):
+        if round(cap["end"] * 1000) > round(cap["start"] * 1000):
+            out.append(cap)
+            continue
+        if out:
+            out[-1]["text"] = f"{out[-1]['text']} {cap['text']}".strip()
+        elif i + 1 < len(captions):
+            # No previous cue to absorb it: hand the text to the next one.
+            nxt = captions[i + 1]
+            nxt["text"] = f"{cap['text']} {nxt['text']}".strip()
+        else:
+            out.append(cap)
+    return out or captions
+
+
 def _mark_emphasized(words: list) -> list:
     """Return a list[bool] of which words deserve solo captions.
 
@@ -258,22 +325,29 @@ def words_to_captions(segments: list, fps: float = 24.0,
     if not all_words:
         return []
 
+    # Normalise word timing BEFORE chunking. Whisper occasionally emits
+    # duplicated or inverted stamps; sorting the finished captions (the old
+    # approach) reordered the transcript and still let overlapping cues
+    # through. Clamping here fixes overlap, zero-duration and reordering at
+    # the source, and restores the monotonicity the balanced chunker's
+    # feasibility pruning assumes.
+    all_words = _normalise_word_times(all_words)
+
     if max_words > 0:
         captions = _greedy_captions(all_words, max_words, max_chars,
                                     max_lines, max_dur)
     else:
         captions = _balanced_captions(all_words, max_chars, max_lines, max_dur)
 
-    # Whisper word timestamps are occasionally non-monotonic; sort so the
-    # overlap clamp below can never see a "next" caption that starts before
-    # this one (which would clamp end below start).
-    captions.sort(key=lambda c: c["start"])
-
     # Enforce minimum duration and add gaps
     for i, cap in enumerate(captions):
         dur = cap["end"] - cap["start"]
         if dur < min_dur:
             cap["end"] = cap["start"] + min_dur
+        # A single unsplittable word with a runaway Whisper timestamp would
+        # otherwise sit on screen for its full (bogus) duration.
+        if cap["end"] - cap["start"] > max_dur:
+            cap["end"] = cap["start"] + max_dur
 
         # Ensure end never overlaps with next caption's start
         if i < len(captions) - 1:
@@ -283,10 +357,21 @@ def words_to_captions(segments: list, fps: float = 24.0,
             # Hard clamp: never exceed next caption's start
             if cap["end"] > next_start:
                 cap["end"] = next_start
-        # Never emit start >= end -- zero/negative durations make some
-        # importers reject the whole file. A 50ms sliver beats a dead SRT.
-        if cap["end"] <= cap["start"]:
-            cap["end"] = cap["start"] + 0.05
+        # Never emit start >= end. The comparison is in MILLISECONDS because
+        # that is the SRT's resolution: a 0.3ms sliver passes a float
+        # comparison but writes as a zero-duration cue, which makes strict
+        # importers reject the whole file. The bump must not run past the
+        # next cue either -- otherwise fixing a zero-duration cue creates an
+        # overlapping one. If there is genuinely no room, the cue is left
+        # zero-length and _merge_zero_duration folds its text into a
+        # neighbour so no words are lost.
+        if round(cap["end"] * 1000) <= round(cap["start"] * 1000):
+            bumped = cap["start"] + 0.001
+            if i < len(captions) - 1:
+                bumped = min(bumped, captions[i + 1]["start"])
+            cap["end"] = bumped
+
+    captions = _merge_zero_duration(captions)
 
     # Shift into timeline time last: a uniform shift preserves ordering, so
     # every clamp above stays valid.
@@ -328,7 +413,14 @@ def _greedy_captions(all_words: list, max_words: int, max_chars: int,
             too_long = False
 
         # Check if too many lines
-        too_many_lines = len(test_lines) > max_lines
+        # Width matters as well as line count: a word longer than max_chars
+        # forms a single over-wide line, which passes a count-only check and
+        # lets more words pile onto the same caption.
+        too_many_lines = (
+            len(test_lines) > max_lines
+            or (len(block_words) > 0
+                and any(len(l) > max_chars for l in test_lines))
+        )
 
         # Check pause between this word and the previous one
         if block_words:
@@ -416,18 +508,37 @@ def _greedy_captions(all_words: list, max_words: int, max_chars: int,
     return captions
 
 
+# Sentinels that survive the punctuation delete (they are not \w, so they
+# are listed explicitly in the keep-set below).
+_DEC_COMMA = ""
+_DEC_POINT = ""
+
+
 def strip_punct_text(text: str) -> str:
     """Remove sentence punctuation but keep word-internal characters.
 
-    A bare [^\\w\\s] delete corrupts words: "don't" -> "dont", "e-post" ->
-    "epost", "Wi-Fi" -> "WiFi". Keep apostrophes and hyphens inside words,
-    then trim leading/trailing punctuation per word.
+    Three things this must NOT do:
+      - corrupt words: "don't" -> "dont", "e-post" -> "epost" (apostrophes
+        and hyphens are kept inside words, trimmed only at the edges);
+      - fuse tokens: deleting a separator without leaving a space turned
+        "går—nu" into "gårnu", so removals become spaces;
+      - corrupt numbers: "3,5 miljoner" must not become "35 miljoner".
+        Decimal separators BETWEEN DIGITS are protected, along with '%',
+        because these end up burned into client deliverables where a wrong
+        figure is both invisible in review and materially wrong.
     """
     import re
-    # En/em dashes separate words ("går—nu"); deleting them would merge.
+    # En/em dashes separate words ("går—nu").
     text = re.sub(r"[–—]", " ", text)
-    # Drop everything except word chars, whitespace, apostrophes, hyphens.
-    text = re.sub(r"[^\w\s'’\-]", "", text, flags=re.UNICODE)
+    # Protect decimal separators (Swedish "3,5" and thousands "1.500").
+    text = re.sub(r"(?<=\d)[.,](?=\d)",
+                  lambda m: _DEC_COMMA if m.group(0) == "," else _DEC_POINT,
+                  text)
+    # Replace (not delete) everything except word chars, whitespace,
+    # apostrophes, hyphens, percent and the decimal sentinels.
+    text = re.sub(rf"[^\w\s'’\-%{_DEC_COMMA}{_DEC_POINT}]", " ", text,
+                  flags=re.UNICODE)
+    text = text.replace(_DEC_COMMA, ",").replace(_DEC_POINT, ".")
     # Trim the keepers when they sit at word edges ("'hello-" -> "hello").
     words = [w.strip("'’-") for w in text.split()]
     return " ".join(w for w in words if w)
@@ -448,18 +559,35 @@ def words_to_srt(segments: list, fps: float = 24.0, strip_punctuation: bool = Fa
 
     uppercase = bool(cfg.get("uppercase", False))
     srt_lines = []
-    for i, cap in enumerate(captions, 1):
+    index = 0
+    for cap in captions:
         text = strip_punct_text(cap["text"]) if strip_punctuation else cap["text"]
         if uppercase:
             text = text.upper()
-        lines = _split_into_lines(text, max_chars)
-        display = lines[:max_lines]
+        text = text.strip()
+        # A caption whose text is entirely punctuation (Whisper emits bare
+        # "-" / "..." tokens) collapses to "" under --strip-punctuation. An
+        # empty body line breaks SRT block framing and every cue after it,
+        # so skip the cue and renumber.
+        if not text:
+            continue
 
-        srt_lines.append(str(i))
+        lines = _split_into_lines(text, max_chars)
+        # Deliberately NOT truncated to max_lines. The chunker enforces the
+        # limit on the raw text; a transform applied afterwards (uppercase
+        # widening "ß" to "SS", a dash becoming a word break) can add a line,
+        # and dropping the overflow silently deleted words from the caption.
+        # An occasional extra line is a cosmetic issue; losing words is not.
+        if len(lines) > max_lines:
+            log.debug(f"Caption exceeds {max_lines} line(s) after text "
+                      f"transform; keeping all words: {text!r}")
+
+        index += 1
+        srt_lines.append(str(index))
         srt_lines.append(
             f"{_format_timestamp(cap['start'])} --> {_format_timestamp(cap['end'])}"
         )
-        srt_lines.append("\n".join(display))
+        srt_lines.append("\n".join(lines))
         srt_lines.append("")  # blank line separator
 
     return "\n".join(srt_lines)
@@ -474,10 +602,23 @@ def write_srt(segments: list, output_path: str, fps: float = 24.0,
         log.warning("No captions generated - empty transcription.")
         return False
 
-    with open(output_path, "w", encoding="utf-8-sig") as f:
-        f.write(content)
-        if not content.endswith("\n"):
-            f.write("\n")
+    # Write-then-rename: a cancel (SIGTERM) landing mid-write would otherwise
+    # leave a truncated file, and in `--file --output existing.srt` mode that
+    # file belongs to the user.
+    import os
+    tmp_path = f"{output_path}.{os.getpid()}.tmp"
+    try:
+        with open(tmp_path, "w", encoding="utf-8-sig") as f:
+            f.write(content)
+            if not content.endswith("\n"):
+                f.write("\n")
+        os.replace(tmp_path, output_path)
+    except OSError:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
     # Count caption blocks (blank-line separated). Counting digit-only lines
     # would also match caption text that happens to be a bare number.
@@ -500,6 +641,13 @@ def write_captions_json(segments: list, output_path: str, fps: float = 24.0,
     if strip_punctuation:
         for cap in captions:
             cap["text"] = strip_punct_text(cap["text"])
+
+    # Same rule as the SRT writer: a caption that transforms to empty text
+    # is not a caption.
+    captions = [c for c in captions if c["text"].strip()]
+    if not captions:
+        log.warning("No captions left after text transforms.")
+        return False
 
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(captions, f, ensure_ascii=False)

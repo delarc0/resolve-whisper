@@ -93,11 +93,33 @@ class TestCleanupOwnFilesOnly(unittest.TestCase):
             os.utime(own_old, (old, old))
             os.utime(foreign_old, (old, old))
 
-            _cleanup_old_srts(d, keep_days=30)
+            # Cleanup only ever runs in the tool's OWN output folder.
+            orig = caption._default_output_dir
+            caption._default_output_dir = lambda: d
+            try:
+                _cleanup_old_srts(d, keep_days=30)
+            finally:
+                caption._default_output_dir = orig
 
             self.assertFalse(os.path.exists(own_old), "own stale file should go")
             self.assertTrue(os.path.exists(foreign_old), "foreign SRT must survive")
             self.assertTrue(os.path.exists(own_new), "fresh own file must survive")
+
+    def test_custom_output_dir_is_never_swept(self):
+        # A user pointing output_dir at a delivery folder must not have
+        # month-old client subtitles deleted, even if the name happens to
+        # match the tool's timestamp pattern.
+        with tempfile.TemporaryDirectory() as d:
+            victim = os.path.join(d, "Kundleverans FINAL 20250612-093000.srt")
+            with open(victim, "w") as f:
+                f.write("x")
+            old = time.time() - 60 * 86400
+            os.utime(victim, (old, old))
+
+            _cleanup_old_srts(d, keep_days=30)  # d != default output dir
+
+            self.assertTrue(os.path.exists(victim),
+                            "custom output dir must never be swept")
 
 
 class TestRunLock(unittest.TestCase):
@@ -115,22 +137,31 @@ class TestRunLock(unittest.TestCase):
         except OSError:
             pass
 
+    # The lock is a KERNEL lock held on an open fd, not the existence of the
+    # file. That is what makes it survive SIGKILL/TerminateProcess: the OS
+    # drops it when the process dies. The file is therefore expected to
+    # remain on disk after release; what matters is that it re-acquires.
+
     def test_acquire_release_roundtrip(self):
         self.assertTrue(_acquire_run_lock())
         with open(self.lock_path) as f:
             self.assertEqual(int(f.read()), os.getpid())
         _release_run_lock()
-        self.assertFalse(os.path.exists(self.lock_path))
-
-    def test_live_pid_blocks(self):
+        # Releasing must make the lock available again...
         self.assertTrue(_acquire_run_lock())
-        # Our own PID is alive, so a second acquire must fail.
+        _release_run_lock()
+
+    def test_live_lock_blocks(self):
+        self.assertTrue(_acquire_run_lock())
+        # Holding the kernel lock, a second acquire must fail.
         self.assertFalse(_acquire_run_lock())
         _release_run_lock()
 
-    def test_stale_pid_taken_over(self):
+    def test_leftover_file_with_dead_pid_is_not_a_lock(self):
+        # A file left by a crashed run holds no kernel lock, so the next run
+        # takes over immediately -- no 2h Windows lockout, no PID-reuse wedge.
         with open(self.lock_path, "w") as f:
-            f.write("999999")  # almost certainly dead
+            f.write("999999")
         self.assertTrue(_acquire_run_lock())
         _release_run_lock()
 
@@ -140,10 +171,11 @@ class TestRunLock(unittest.TestCase):
         self.assertTrue(_acquire_run_lock())
         _release_run_lock()
 
-    def test_release_only_when_owner(self):
+    def test_release_without_holding_is_safe(self):
+        # Never raises, and must not disturb a file we do not own.
         with open(self.lock_path, "w") as f:
             f.write("999999")
-        _release_run_lock()  # not ours: must stay
+        _release_run_lock()
         self.assertTrue(os.path.exists(self.lock_path))
 
 
@@ -171,16 +203,34 @@ class TestAtomicStatusWrite(unittest.TestCase):
 
 class TestCleanWord(unittest.TestCase):
     def test_fillers_stripped(self):
-        for filler in ("um", "uh", "öh", "alltså", "Hmm"):
+        for filler in ("um", "uh", "öh", "asså", "Hmm"):
             self.assertEqual(clean_word(filler), "")
 
     def test_oh_is_kept(self):
         # "oh" carries meaning in English; removed from the filler list.
         self.assertEqual(clean_word("oh"), "oh")
 
+    def test_alltsa_is_kept(self):
+        # "alltså" means "thus/therefore" -- a real word, not a filler.
+        # Deleting it also deleted its sentence-ending punctuation, which
+        # merged two sentences into one caption stretch.
+        self.assertEqual(clean_word("alltså"), "alltså")
+
     def test_annotations_removed(self):
         self.assertEqual(clean_word("[Music]"), "")
         self.assertEqual(clean_word("[inaudible]"), "")
+
+    def test_annotations_with_trailing_punctuation_removed(self):
+        # "[Musik]," used to leak "Musik]," into the caption.
+        self.assertEqual(clean_word("[Musik],"), "")
+        self.assertEqual(clean_word("[Musik]."), "")
+        self.assertEqual(clean_word("(skratt)"), "")
+
+    def test_symbol_only_tokens_removed(self):
+        # These become captions whose text is empty once punctuation is
+        # stripped, which produced a malformed SRT block.
+        for junk in ("-", "...", "♪", "–"):
+            self.assertEqual(clean_word(junk), "")
 
     def test_real_words_kept(self):
         self.assertEqual(clean_word(" hej "), "hej")
