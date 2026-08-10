@@ -99,11 +99,17 @@ def _avg_probability(probs) -> float:
 class Transcriber:
     def __init__(self):
         self._vad = None
+        # Pick the model from the configured language: Swedish -> KB-Whisper,
+        # everything else -> large-v3. Resolved once here since cfg["language"]
+        # is set before the Transcriber is built.
+        self.model_name = _config.model_for_language(cfg.get("language"))
+        if self.model_name != _config.MODEL_SIZE:
+            log.info(f"Swedish detected -> using KB-Whisper ({self.model_name}).")
         if _config.IS_MAC:
             import mlx_whisper
             self._mlx = mlx_whisper
             self.model = None
-            log.info(f"Loading model '{_config.MODEL_SIZE}' with MLX (Metal)...")
+            log.info(f"Loading model '{self.model_name}' with MLX (Metal)...")
             # Warm up: forces model load + Metal kernel compilation at __init__
             # so the first real transcribe() call doesn't pay the cost. Also
             # surfaces broken downloads / configs before we render audio.
@@ -111,11 +117,27 @@ class Transcriber:
                 import numpy as np
                 self._mlx.transcribe(
                     np.zeros(16000, dtype=np.float32),
-                    path_or_hf_repo=_config.MODEL_SIZE,
+                    path_or_hf_repo=self.model_name,
                 )
             except Exception as e:
-                log.error(f"MLX model warm-up failed: {e}")
-                raise
+                # If the Swedish KB-Whisper MLX model can't load (e.g. not yet
+                # converted/hosted), fall back to large-v3 rather than failing.
+                if self.model_name != _config.MODEL_SIZE:
+                    log.warning(
+                        f"KB-Whisper MLX load failed ({e}); "
+                        f"falling back to {_config.MODEL_SIZE}.")
+                    self.model_name = _config.MODEL_SIZE
+                    try:
+                        self._mlx.transcribe(
+                            np.zeros(16000, dtype=np.float32),
+                            path_or_hf_repo=self.model_name,
+                        )
+                    except Exception as e2:
+                        log.error(f"MLX model warm-up failed: {e2}")
+                        raise
+                else:
+                    log.error(f"MLX model warm-up failed: {e}")
+                    raise
 
             # Load silero-vad (ONNX). Used to find speech regions before
             # transcription -- mlx_whisper's word timestamps drift after long
@@ -136,10 +158,10 @@ class Transcriber:
             if _config.DEVICE == "cuda":
                 import platforminfo
                 platforminfo.add_cuda_dll_dir()
-            log.info(f"Loading model '{_config.MODEL_SIZE}' on {_config.DEVICE} ({_config.COMPUTE_TYPE})...")
+            log.info(f"Loading model '{self.model_name}' on {_config.DEVICE} ({_config.COMPUTE_TYPE})...")
             try:
                 self.model = WhisperModel(
-                    _config.MODEL_SIZE,
+                    self.model_name,
                     device=_config.DEVICE,
                     compute_type=_config.COMPUTE_TYPE,
                 )
@@ -153,7 +175,7 @@ class Transcriber:
                     log.info("Falling back to CPU mode (slower but compatible)...")
                     try:
                         self.model = WhisperModel(
-                            _config.MODEL_SIZE,
+                            self.model_name,
                             device="cpu",
                             compute_type="int8",
                         )
@@ -430,7 +452,7 @@ class Transcriber:
         # which covers MP4/MOV/WAV/etc. without us needing soundfile+resampy.
         clip_timestamps = self._vad_clip_timestamps(audio_path)
         kwargs = dict(
-            path_or_hf_repo=_config.MODEL_SIZE,
+            path_or_hf_repo=self.model_name,
             language=cfg["language"],
             word_timestamps=True,
             # Each VAD clip is a continuous speech burst, so we don't want

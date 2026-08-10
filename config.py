@@ -12,6 +12,9 @@ CONFIG_PATH = os.path.join(_APP_DIR, "caption_config.json")
 DEFAULT_CONFIG = {
     # Transcription
     "language": "sv",           # None = auto-detect, "sv" = Swedish, "en" = English
+    # Use KB-Whisper (KBLab Swedish fine-tune, ~47% lower WER on Swedish) when
+    # the language is explicitly "sv". Auto/other languages always use large-v3.
+    "use_kb_whisper": True,
     "beam_size": 10,            # Windows/faster-whisper only; mlx (Mac) decodes greedily
     "initial_prompt": None,     # Context hint, e.g. "Intervju om ledarskap och projektledning."
     # Drop words below this Whisper confidence. 0.0 = off (default): Whisper
@@ -86,3 +89,29 @@ else:
         DEVICE = "cpu"
         COMPUTE_TYPE = "int8"
         log.warning("CUDA not available - using CPU mode (slower transcription)")
+
+# --- Swedish: KB-Whisper (KBLab, National Library of Sweden) ---
+# A large-v3 fine-tune on ~50k h Swedish, ~47% lower WER on Swedish than
+# openai large-v3. Used ONLY when the language is explicitly Swedish; auto
+# and other languages stay on large-v3 (KB-Whisper is Swedish-specialized
+# and degrades other languages).
+#
+# Windows/Linux (faster-whisper) load the CTranslate2 weights straight from
+# the repo. Mac (mlx) has no official MLX build, so KB_WHISPER_MLX names our
+# conversion; if it's blank or fails to load, Swedish falls back to large-v3
+# (config below stays valid, just without the accuracy bump).
+KB_WHISPER_CT2 = "KBLab/kb-whisper-large"
+KB_WHISPER_MLX = ""  # set to an MLX repo/path once converted (see docs)
+
+
+def model_for_language(lang):
+    """Transcription model id for a language code (None/'' = auto-detect).
+
+    Returns the Swedish KB-Whisper model when the user asserted Swedish and
+    the knob is on, else the default large-v3 model for this platform.
+    """
+    if lang and str(lang).lower() == "sv" and cfg.get("use_kb_whisper", True):
+        kb = KB_WHISPER_MLX if IS_MAC else KB_WHISPER_CT2
+        if kb:
+            return kb
+    return MODEL_SIZE

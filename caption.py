@@ -544,7 +544,57 @@ def _restore_deliver_state(project, saved_fmt: dict, saved_mode):
     _safe(project.SetRenderSettings, {"TargetDir": "", "CustomName": ""})
 
 
-def render_audio(project, timeline, output_dir: str) -> str:
+def _render_offset_s(job_settings: dict, timeline, fps: float) -> float:
+    """Seconds between the timeline start and the start of the rendered audio.
+
+    When the user sets in/out points, Resolve renders only that range, so the
+    audio (and every Whisper timestamp derived from it) is zero-based at the
+    IN point. Resolve maps an imported SRT's 00:00:00 to the timeline start,
+    so without this offset every caption lands at the top of the timeline
+    instead of over the speech.
+
+    The render job's MarkIn is authoritative (it's what actually got
+    rendered); timeline.GetMarkInOut() is the fallback for API versions that
+    don't report MarkIn on the job. Returns 0.0 when the whole timeline was
+    rendered or the offset can't be determined.
+    """
+    if not fps or fps <= 0:
+        return 0.0
+
+    start_frame = _safe(timeline.GetStartFrame, _default=None)
+    if start_frame is None:
+        return 0.0
+
+    mark_in = None
+    if isinstance(job_settings, dict):
+        for key in ("MarkIn", "markIn"):
+            if key in job_settings:
+                mark_in = job_settings[key]
+                break
+
+    if mark_in is None:
+        marks = _safe(timeline.GetMarkInOut, _default=None)
+        if isinstance(marks, dict):
+            # {'video': {'in': int, 'out': int}, 'audio': {...}}
+            for track_kind in ("video", "audio"):
+                entry = marks.get(track_kind)
+                if isinstance(entry, dict) and entry.get("in") is not None:
+                    mark_in = entry["in"]
+                    break
+
+    try:
+        offset_frames = int(mark_in) - int(start_frame)
+    except (TypeError, ValueError):
+        return 0.0
+
+    # Negative means no in-point (or a mark reported in a different frame
+    # base); trust nothing and place from the timeline start.
+    if offset_frames <= 0:
+        return 0.0
+    return offset_frames / float(fps)
+
+
+def render_audio(project, timeline, output_dir: str, fps: float = 0.0):
     """Render timeline audio via the regular render queue.
 
     Quick Export's preset universe is built-in only and can't see the user's
@@ -572,16 +622,16 @@ def render_audio(project, timeline, output_dir: str) -> str:
             os.makedirs(output_dir, exist_ok=True)
         except OSError as e:
             log.error(f"Cannot create output dir {output_dir}: {e}")
-            return None
+            return None, 0.0
     if not os.access(output_dir, os.W_OK):
         log.error(f"Output dir not writable: {output_dir}")
-        return None
+        return None, 0.0
 
     presets = _safe(project.GetRenderPresetList, _default=[]) or []
     if _AUDIO_PRESET_NAME not in presets:
         log.error(f"'{_AUDIO_PRESET_NAME}' render preset not found in this project.")
         log.error("Run: python caption.py --check  (will create it)")
-        return None
+        return None, 0.0
 
     # Snapshot the user's Deliver page state BEFORE we touch anything, so we
     # can put them back on a video-export-ready state at the end. We can't
@@ -598,7 +648,7 @@ def render_audio(project, timeline, output_dir: str) -> str:
     log.info(f"Loading '{_AUDIO_PRESET_NAME}' preset...")
     if not _safe(project.LoadRenderPreset, _AUDIO_PRESET_NAME):
         log.error(f"LoadRenderPreset('{_AUDIO_PRESET_NAME}') failed.")
-        return None
+        return None, 0.0
 
     if not _safe(project.SetRenderSettings, {
         "TargetDir": output_dir,
@@ -610,7 +660,7 @@ def render_audio(project, timeline, output_dir: str) -> str:
     if not job_id:
         log.error("AddRenderJob returned no id.")
         _restore_deliver_state(project, saved_fmt, saved_mode)
-        return None
+        return None, 0.0
 
     # Validate the queued job actually exports audio (catches a tampered preset).
     job_settings = {}
@@ -627,7 +677,7 @@ def render_audio(project, timeline, output_dir: str) -> str:
         log.error("Recreate it: python caption.py --check")
         _delete_job_if_ours(project, job_id, pre_existing_ids)
         _restore_deliver_state(project, saved_fmt, saved_mode)
-        return None
+        return None, 0.0
     codec_note = _audio_codec_warning(job_settings)
     if codec_note:
         log.warning(f"'{_AUDIO_PRESET_NAME}' preset: {codec_note}")
@@ -637,7 +687,7 @@ def render_audio(project, timeline, output_dir: str) -> str:
     try:
         if not _start_rendering_compat(project, job_id):
             log.error("StartRendering failed across all known signatures.")
-            return None
+            return None, 0.0
 
         start = time.time()
         last_pct = -1
@@ -654,7 +704,7 @@ def render_audio(project, timeline, output_dir: str) -> str:
                     if not _safe(project.GetName):
                         log.error("Lost connection to Resolve (did it quit?). Aborting.")
                         _write_status("error", "Lost connection to Resolve.")
-                        return None
+                        return None, 0.0
                     empty_polls = 0  # project still alive; transient blips
             else:
                 empty_polls = 0
@@ -676,12 +726,12 @@ def render_audio(project, timeline, output_dir: str) -> str:
                 break
             if job_status in ("Failed", "Cancelled"):
                 log.error(f"Render ended with status: {job_status}")
-                return None
+                return None, 0.0
             time.sleep(0.5)
         else:
             log.error(f"Render timed out after {_RENDER_TIMEOUT_S}s.")
             _safe(project.StopRendering)
-            return None
+            return None, 0.0
 
         # Resolve output path from the job's actual settings.
         job_settings_post = {}
@@ -692,14 +742,23 @@ def render_audio(project, timeline, output_dir: str) -> str:
         audio_path = _expected_output_path(job_settings_post, output_dir, wav_name)
         if not audio_path or not os.path.exists(audio_path):
             log.error("Render reported complete but audio file not found.")
-            return None
+            return None, 0.0
+
+        # How far into the timeline this audio starts (in/out range renders
+        # are zero-based at the IN point). Prefer the pre-render job settings,
+        # which still carry MarkIn; the post-render copy can drop it.
+        offset_s = _render_offset_s(job_settings_post or job_settings, timeline, fps)
+        if offset_s <= 0:
+            offset_s = _render_offset_s(job_settings, timeline, fps)
+        if offset_s > 0:
+            log.info(f"In-point offset: captions shift +{offset_s:.2f}s to match the timeline.")
 
         try:
             size_mb = os.path.getsize(audio_path) / (1024 * 1024)
             log.info(f"Audio rendered: {audio_path} ({size_mb:.1f} MB)")
         except Exception:
             log.info(f"Audio rendered: {audio_path}")
-        return audio_path
+        return audio_path, offset_s
 
     except KeyboardInterrupt:
         log.warning("Interrupted; stopping render and cleaning up...")
@@ -750,7 +809,7 @@ def run_resolve_mode(args):
 
         _write_status("rendering_audio", f"Timeline: {timeline.GetName()}")
         tmp_dir = tempfile.mkdtemp(prefix="resolve_whisper_")
-        wav_path = render_audio(project, timeline, tmp_dir)
+        wav_path, timeline_offset_s = render_audio(project, timeline, tmp_dir, fps)
         if not wav_path:
             _write_status(
                 "error",
@@ -834,7 +893,10 @@ def run_resolve_mode(args):
         srt_path = os.path.join(output_dir, f"{safe_name} {run_stamp}.srt")
 
         _write_status("writing_srt", "Writing captions to disk...")
-        success = write_srt(segments, srt_path, fps, strip_punctuation=strip_punct)
+        # offset_s puts the captions where the speech actually is when the
+        # user rendered an in/out range instead of the whole timeline.
+        success = write_srt(segments, srt_path, fps, strip_punctuation=strip_punct,
+                            offset_s=timeline_offset_s)
         if not success:
             _write_status("error", "SRT write failed.")
             return 1

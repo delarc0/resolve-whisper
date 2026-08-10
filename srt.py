@@ -222,9 +222,16 @@ def _balanced_captions(all_words: list, max_chars: int, max_lines: int,
     return captions
 
 
-def words_to_captions(segments: list, fps: float = 24.0) -> list:
+def words_to_captions(segments: list, fps: float = 24.0,
+                      offset_s: float = 0.0) -> list:
     """
     Group transcription segments into caption blocks.
+
+    offset_s shifts every caption later by that many seconds. Used when the
+    audio was rendered from an in/out range: Whisper timestamps are zero-based
+    at the IN point, but Resolve maps an imported SRT's 00:00:00 to the
+    timeline start, so without the shift captions land at the top of the
+    timeline instead of over the speech.
 
     Reels mode (max_words > 0) chunks greedily: short groups timed tightly to
     speech, emphasized words solo. Plain-SRT mode (max_words == 0) uses
@@ -280,6 +287,13 @@ def words_to_captions(segments: list, fps: float = 24.0) -> list:
         # importers reject the whole file. A 50ms sliver beats a dead SRT.
         if cap["end"] <= cap["start"]:
             cap["end"] = cap["start"] + 0.05
+
+    # Shift into timeline time last: a uniform shift preserves ordering, so
+    # every clamp above stays valid.
+    if offset_s:
+        for cap in captions:
+            cap["start"] += offset_s
+            cap["end"] += offset_s
 
     return captions
 
@@ -419,9 +433,13 @@ def strip_punct_text(text: str) -> str:
     return " ".join(w for w in words if w)
 
 
-def words_to_srt(segments: list, fps: float = 24.0, strip_punctuation: bool = False) -> str:
-    """Convert transcription segments into SRT subtitle format."""
-    captions = words_to_captions(segments, fps)
+def words_to_srt(segments: list, fps: float = 24.0, strip_punctuation: bool = False,
+                 offset_s: float = 0.0) -> str:
+    """Convert transcription segments into SRT subtitle format.
+
+    offset_s shifts captions into timeline time (see words_to_captions).
+    """
+    captions = words_to_captions(segments, fps, offset_s=offset_s)
     if not captions:
         return ""
 
@@ -447,9 +465,11 @@ def words_to_srt(segments: list, fps: float = 24.0, strip_punctuation: bool = Fa
     return "\n".join(srt_lines)
 
 
-def write_srt(segments: list, output_path: str, fps: float = 24.0, strip_punctuation: bool = False):
+def write_srt(segments: list, output_path: str, fps: float = 24.0,
+              strip_punctuation: bool = False, offset_s: float = 0.0):
     """Generate SRT and write to file."""
-    content = words_to_srt(segments, fps, strip_punctuation=strip_punctuation)
+    content = words_to_srt(segments, fps, strip_punctuation=strip_punctuation,
+                           offset_s=offset_s)
     if not content:
         log.warning("No captions generated - empty transcription.")
         return False
@@ -466,9 +486,10 @@ def write_srt(segments: list, output_path: str, fps: float = 24.0, strip_punctua
     return True
 
 
-def write_captions_json(segments: list, output_path: str, fps: float = 24.0, strip_punctuation: bool = False):
+def write_captions_json(segments: list, output_path: str, fps: float = 24.0,
+                        strip_punctuation: bool = False, offset_s: float = 0.0):
     """Generate structured caption data and write to JSON file."""
-    captions = words_to_captions(segments, fps)
+    captions = words_to_captions(segments, fps, offset_s=offset_s)
     if not captions:
         log.warning("No captions generated - empty transcription.")
         return False
