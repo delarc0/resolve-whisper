@@ -155,14 +155,62 @@ def _merge_zero_duration(captions: list) -> list:
             out.append(cap)
             continue
         if out:
-            out[-1]["text"] = f"{out[-1]['text']} {cap['text']}".strip()
+            out[-1]["text"] = _join_words([out[-1]["text"], cap["text"]])
         elif i + 1 < len(captions):
             # No previous cue to absorb it: hand the text to the next one.
             nxt = captions[i + 1]
-            nxt["text"] = f"{cap['text']} {nxt['text']}".strip()
+            nxt["text"] = _join_words([cap["text"], nxt["text"]])
         else:
             out.append(cap)
     return out or captions
+
+
+# Characters that attach to the PRECEDING word, so no space goes before
+# them. KB-Whisper in particular splits "3,5" into the tokens "3" and ",5",
+# which a naive space-join renders as "3 ,5" -- and which then defeats the
+# decimal protection in strip_punct_text, giving "3 5".
+_BIND_LEFT = ",.;:!?%)]}…’"
+
+
+def _merge_bound_tokens(words: list) -> list:
+    """Fuse a token that binds leftwards into the previous word.
+
+    KB-Whisper splits "3,5" into the tokens "3" and ",5". Joining them
+    correctly inside a caption is not enough: the chunker can put them in
+    DIFFERENT captions, which renders as "3" / "5" on two cards -- a wrong
+    number on screen. Merging at the word level (and extending the timing to
+    cover both) makes them inseparable, and stops a caption from ever ending
+    on a dangling comma.
+    """
+    out = []
+    for w in words:
+        text = (w.text or "").strip()
+        if not text:
+            continue
+        if out and text[0] in _BIND_LEFT:
+            prev = out[-1]
+            prev.text = prev.text + text
+            prev.end = max(prev.end, w.end)
+            continue
+        out.append(_TimedWord(text, w.start, w.end,
+                              getattr(w, "probability", 1.0)))
+    return out
+
+
+def _join_words(texts) -> str:
+    """Join word tokens into caption text with correct spacing."""
+    out = ""
+    for raw in texts:
+        t = str(raw).strip()
+        if not t:
+            continue
+        if not out:
+            out = t
+        elif t[0] in _BIND_LEFT:
+            out += t
+        else:
+            out += " " + t
+    return out
 
 
 def _mark_emphasized(words: list) -> list:
@@ -255,7 +303,7 @@ def _partition_stretch(words: list, max_chars: int, max_lines: int,
             return True  # a single word can't be split further
         if words[i - 1].end - words[j].start > max_dur:
             return False
-        text = " ".join(w.text for w in words[j:i])
+        text = _join_words(w.text for w in words[j:i])
         lines = _split_into_lines(text, max_chars)
         return len(lines) <= max_lines and all(len(l) <= max_chars for l in lines)
 
@@ -287,7 +335,7 @@ def _partition_stretch(words: list, max_chars: int, max_lines: int,
         {
             "start": c[0].start,
             "end": c[-1].end,
-            "text": " ".join(w.text for w in c),
+            "text": _join_words(w.text for w in c),
         }
         for c in chunks
     ]
@@ -344,6 +392,11 @@ def words_to_captions(segments: list, fps: float = 24.0,
     # the source, and restores the monotonicity the balanced chunker's
     # feasibility pruning assumes.
     all_words = _normalise_word_times(all_words)
+    # Fuse tokens like ",5" into the preceding word BEFORE chunking, so a
+    # split can never put "3" and "5" on separate caption cards.
+    all_words = _merge_bound_tokens(all_words)
+    if not all_words:
+        return []
 
     if max_words > 0:
         captions = _greedy_captions(all_words, max_words, max_chars,
@@ -495,7 +548,7 @@ def _greedy_captions(all_words: list, max_words: int, max_chars: int,
             block_text = ""
 
         block_words.append(word)
-        block_text = f"{block_text} {w_text}".strip() if block_text else w_text
+        block_text = _join_words([block_text, w_text]) if block_text else w_text
 
         # If this word is emphasized, close the block right after adding it
         # so it stands alone on screen.

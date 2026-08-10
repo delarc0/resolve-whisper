@@ -26,7 +26,8 @@ fi
 PY="$WORK/venv/bin/python"
 "$PY" -m pip install --quiet --upgrade pip
 echo "--- installing deps (mlx, torch, transformers) ---"
-"$PY" -m pip install --quiet mlx numpy tqdm huggingface_hub transformers torch
+"$PY" -m pip install --quiet mlx numpy tqdm huggingface_hub transformers torch \
+    tiktoken scipy more-itertools numba
 
 # 2. mlx-examples carries the whisper converter (not shipped in the pip pkg).
 if [ ! -d "$WORK/mlx-examples" ]; then
@@ -42,6 +43,13 @@ cd "$WORK/mlx-examples/whisper"
     --torch-name-or-path KBLab/kb-whisper-large \
     --mlx-path "$OUT" \
     --dtype float16
+
+# mlx-examples' converter writes model.safetensors, but mlx_whisper's
+# runtime loader looks for weights.safetensors. Without this rename the
+# model converts "successfully" and then never loads.
+if [ -f "$OUT/model.safetensors" ] && [ ! -f "$OUT/weights.safetensors" ]; then
+    mv "$OUT/model.safetensors" "$OUT/weights.safetensors"
+fi
 
 echo "=== conversion finished $(date) ==="
 ls -la "$OUT"

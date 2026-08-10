@@ -93,6 +93,61 @@ class TestNumbersSurvivePunctuationStripping(unittest.TestCase):
         self.assertNotIn(".", strip_punct_text("xy"))
 
 
+class TestBoundTokenMerging(unittest.TestCase):
+    """KB-Whisper emits "3,5" as the tokens "3" and ",5". Joining them only
+    at render time is not enough: the chunker could put them on separate
+    caption cards, i.e. a wrong number on screen."""
+
+    def setUp(self):
+        from srt import cfg
+        self.cfg = cfg
+        self._saved = dict(cfg)
+        cfg.update({
+            "max_words_per_caption": 3,
+            "max_chars_per_line": 22,
+            "max_lines": 1,
+            "min_duration_s": 1.0,
+            "max_duration_s": 7.0,
+            "gap_frames": 2,
+            "uppercase": False,
+        })
+
+    def tearDown(self):
+        self.cfg.clear()
+        self.cfg.update(self._saved)
+
+    def test_decimal_token_never_splits_across_captions(self):
+        words = [W("Vi", 0.0, 0.1), W("omsatte", 0.18, 0.66),
+                 W("3", 0.74, 1.0), W(",5", 1.08, 1.64),
+                 W("miljoner", 1.72, 2.30)]
+        caps = words_to_captions([seg(words)], fps=25.0)
+        texts = [c["text"] for c in caps]
+        self.assertTrue(any("3,5" in t for t in texts),
+                        f"decimal was split across captions: {texts}")
+        for t in texts:
+            self.assertNotEqual(t.strip(), "3")
+            self.assertNotEqual(t.strip(), ",5")
+
+    def test_reels_output_keeps_the_number(self):
+        words = [W("3", 0.0, 0.3), W(",5", 0.35, 0.7),
+                 W("miljoner", 0.8, 1.3)]
+        out = words_to_srt([seg(words)], fps=25.0, strip_punctuation=True)
+        self.assertIn("3,5", out)
+
+    def test_caption_never_ends_on_dangling_comma(self):
+        words = [W("hej", 0.0, 0.3), W(",", 0.31, 0.33),
+                 W("då", 0.4, 0.8)]
+        caps = words_to_captions([seg(words)], fps=25.0)
+        for cap in caps:
+            self.assertFalse(cap["text"].strip().startswith(","),
+                             f"caption starts with a comma: {cap}")
+
+    def test_trailing_period_token_merges(self):
+        words = [W("slut", 0.0, 0.4), W(".", 0.41, 0.43)]
+        caps = words_to_captions([seg(words)], fps=25.0)
+        self.assertEqual(caps[0]["text"], "slut.")
+
+
 class TestNoMalformedCues(unittest.TestCase):
     def setUp(self):
         from srt import cfg
