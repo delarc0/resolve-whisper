@@ -239,8 +239,10 @@ def _start_progress_estimator(audio_duration_s: float):
         t0 = time.time()
         while not stop.is_set():
             if expected is None:
-                _write_status("transcribing", "Transcribing audio...",
-                              progress=-1)
+                # No detail line: the title already says "Transcribing
+                # audio", and with no duration there is no percentage to
+                # add. Repeating the title reads as a stuck window.
+                _write_status("transcribing", "", progress=-1)
             else:
                 elapsed = time.time() - t0
                 pct = int(min(elapsed / expected * 95.0, 95.0))
@@ -551,12 +553,28 @@ def _validate_audio_only_settings(settings: dict) -> list:
     return problems
 
 
-def _audio_codec_warning(settings: dict) -> str:
+def _resolve_major(resolve) -> int:
+    """Major Resolve version, or 0 if it can't be determined."""
+    try:
+        v = resolve.GetVersionString()
+        return int(str(v).split(".")[0])
+    except Exception:
+        return 0
+
+
+def _audio_codec_warning(settings: dict, resolve=None) -> str:
     """Return a warning string when the render audio codec isn't PCM/WAV, else "".
 
     Non-PCM (e.g. Resolve 21's factory AAC) is not fatal - duration, VAD, and
     transcription all decode via ffmpeg/ffprobe - but WAV skips those fallback
     decodes, so it's worth surfacing instead of burying at info level.
+
+    On Resolve 21 it is not worth surfacing as something to FIX. 'Audio Only'
+    is a factory preset there, so DeleteRenderPreset refuses it, and
+    SetCurrentRenderFormatAndCodec no longer accepts audio formats at all
+    (both verified against 21.0.3.7). The old text told users to recreate the
+    preset as WAV, which cannot succeed on 21 -- an instruction that only
+    wastes the time of whoever follows it.
     """
     if not isinstance(settings, dict):
         return ""
@@ -567,6 +585,12 @@ def _audio_codec_warning(settings: dict) -> str:
         and "pcm" not in audio_codec.lower()
         and "linearpcm" not in audio_codec.lower().replace(" ", "")
     ):
+        if resolve is not None and _resolve_major(resolve) >= 21:
+            return (
+                f"audio codec is {audio_codec!r} - this is Resolve 21's "
+                "factory 'Audio Only' preset, decoded via ffmpeg. Expected; "
+                "nothing to fix."
+            )
         return (
             f"audio codec is {audio_codec!r} - works (decoded via ffmpeg), "
             "but a WAV/PCM preset transcribes faster"
@@ -937,7 +961,7 @@ def render_audio(project, timeline, output_dir: str, fps: float = 0.0):
                 last_pct = pct_int
             # Heartbeat every poll: long renders otherwise trip the UI's
             # 90s stale-file auto-close, taking the Cancel button with it.
-            _write_status("rendering_audio", f"Rendering... {pct_int}%", progress=pct_int)
+            _write_status("rendering_audio", f"{pct_int}% complete", progress=pct_int)
 
             if job_status == "Complete":
                 break
@@ -1584,13 +1608,14 @@ def run_check_mode(args):
                             )
                         else:
                             _row("'Audio Only' preset settings", True)
-                            codec_note = _audio_codec_warning(job_settings)
+                            codec_note = _audio_codec_warning(job_settings, _safe(get_resolve))
                             if codec_note:
                                 log.info(f"  [WARN] 'Audio Only' preset codec - {codec_note}")
-                                warnings.append(
-                                    "For faster transcription, recreate the preset as WAV: "
-                                    "./.venv/bin/python create_audio_only_preset.py --force"
-                                )
+                                if _resolve_major(resolve) < 21:
+                                    warnings.append(
+                                        "For faster transcription, recreate the preset as WAV: "
+                                        "./.venv/bin/python create_audio_only_preset.py --force"
+                                    )
                     else:
                         _row("'Audio Only' preset settings", False, "AddRenderJob returned no id")
                 finally:

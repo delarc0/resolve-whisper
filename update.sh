@@ -60,11 +60,20 @@ echo "  Current build: $BEFORE"
 # Local edits are stashed, never discarded. Someone hand-patching a preset to
 # work around a bug is exactly the person who runs this, and silently
 # throwing their fix away would be a poor trade for an unattended update.
+STASHED=""
 if [ -n "$(git status --porcelain)" ]; then
     STAMP="$(date '+%Y-%m-%d %H:%M')"
-    echo "  Local changes found; stashing them as 'pre-update $STAMP'."
-    echo "  (Recover with: git stash list / git stash pop)"
-    git stash push -u -m "pre-update $STAMP" >/dev/null
+    echo "  Local changes found; setting them aside as 'pre-update $STAMP'."
+    if git stash push -u -m "pre-update $STAMP" >/dev/null; then
+        STASHED="yes"
+    else
+        echo ""
+        echo "  ERROR: could not set your local changes aside, so the update"
+        echo "  stopped rather than touching them. Send this to Erik:"
+        echo ""
+        git status --short --branch | head -10
+        exit 1
+    fi
 fi
 
 echo "  Fetching..."
@@ -106,4 +115,14 @@ echo ""
 
 echo "  Update complete. Build: $AFTER"
 echo "  Restart DaVinci Resolve, then run Workspace > Scripts > LAB37 Check."
+if [ -n "$STASHED" ]; then
+    # Setup prints ~40 lines, so the earlier notice has scrolled off. Anyone
+    # who had work in progress needs to see this at the point they stop
+    # reading, not before a wall of pip output.
+    echo ""
+    echo "  ----------------------------------------"
+    echo "   NOTE: you had local changes. They were set aside, not deleted."
+    echo "   Get them back with:  git stash pop"
+    echo "  ----------------------------------------"
+fi
 echo ""

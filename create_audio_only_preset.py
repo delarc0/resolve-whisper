@@ -24,6 +24,7 @@ from caption import (  # noqa: E402
     _set_wav_format_compat,
     _validate_audio_only_settings,
     _restore_deliver_state,
+    _restore_page,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s",
@@ -104,10 +105,20 @@ def main():
                         help="Delete existing preset and recreate it.")
     args = parser.parse_args()
 
+    # Resolve's scripting module is not on the default path. caption.py has
+    # bootstrapped it for years; this script never did, so the remedy the
+    # health check prints -- "recreate it with create_audio_only_preset.py
+    # --force" -- failed immediately for anyone who followed it.
+    try:
+        import platforminfo
+        platforminfo.bootstrap_resolve_env()
+    except Exception as e:
+        log.debug(f"resolve env bootstrap failed: {e}")
+
     try:
         import DaVinciResolveScript as bmd
     except ImportError:
-        log.error("DaVinciResolveScript not on PYTHONPATH. Launch via the Lua wrapper.")
+        log.error("Could not import DaVinciResolveScript (is Resolve installed?).")
         return 1
 
     resolve = bmd.scriptapp("Resolve")
@@ -128,6 +139,28 @@ def main():
     # (or our temp TargetDir) after we probe/create.
     saved_fmt = _safe(project.GetCurrentRenderFormatAndCodec, _default={}) or {}
     saved_mode = _safe(project.GetCurrentRenderMode)
+    saved_page = _safe(resolve.GetCurrentPage)
+
+    # There is no getter for the Deliver page's output path/filename, so read
+    # them off a throwaway probe job. _validate() below overwrites TargetDir
+    # with a temp dir to make AddRenderJob work on Resolve 21, and without
+    # this snapshot that temp path is what the user finds in their Deliver
+    # page afterwards -- their own output location, silently replaced.
+    saved_target_dir = None
+    saved_custom_name = None
+    _pre = _safe(project.GetRenderJobList, _default=[]) or []
+    _pre_ids = {j.get("JobId") for j in _pre if isinstance(j, dict) and j.get("JobId")}
+    _probe_id = _safe(project.AddRenderJob)
+    if _probe_id:
+        try:
+            for j in (_safe(project.GetRenderJobList, _default=[]) or []):
+                if isinstance(j, dict) and j.get("JobId") == _probe_id:
+                    saved_target_dir = j.get("TargetDir")
+                    saved_custom_name = j.get("CustomName")
+                    break
+        finally:
+            if _probe_id not in _pre_ids:
+                _safe(project.DeleteRenderJob, _probe_id)
     try:
         existing = project.GetRenderPresetList() or []
         already_exists = PRESET_NAME in existing
@@ -137,7 +170,24 @@ def main():
             try:
                 ok = project.DeleteRenderPreset(PRESET_NAME)
                 if not ok:
-                    log.error(f"DeleteRenderPreset('{PRESET_NAME}') returned falsy.")
+                    # On Resolve 21 'Audio Only' is a FACTORY preset: it
+                    # cannot be deleted, and SetCurrentRenderFormatAndCodec
+                    # no longer accepts audio formats, so there is no way to
+                    # build a WAV replacement through the API. Say that,
+                    # instead of reporting a falsy return nobody can act on.
+                    try:
+                        major = int(str(resolve.GetVersionString()).split(".")[0])
+                    except Exception:
+                        major = 0
+                    if major >= 21:
+                        log.error(
+                            f"'{PRESET_NAME}' is a factory preset on Resolve "
+                            f"{major} and cannot be deleted or replaced.")
+                        log.error(
+                            "Nothing to do: the tool renders through it and "
+                            "decodes the AAC with ffmpeg. This is expected.")
+                    else:
+                        log.error(f"DeleteRenderPreset('{PRESET_NAME}') returned falsy.")
                     return 1
             except Exception as e:
                 log.error(f"DeleteRenderPreset failed: {e}")
@@ -166,7 +216,9 @@ def main():
         log.info("Done. Preset created and validated.")
         return 0
     finally:
-        _restore_deliver_state(project, saved_fmt, saved_mode)
+        _restore_deliver_state(project, saved_fmt, saved_mode,
+                               saved_target_dir, saved_custom_name)
+        _restore_page(resolve, saved_page)
 
 
 if __name__ == "__main__":

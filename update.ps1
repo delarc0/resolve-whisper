@@ -37,10 +37,11 @@ $before = (git log -1 --format='%h (%cs)')
 Write-Host "  Current build: $before"
 
 # Local edits are stashed, never discarded (see update.sh for the reasoning).
+$stashed = $false
 if (git status --porcelain) {
     $stamp = Get-Date -Format "yyyy-MM-dd HH:mm"
-    Write-Host "  Local changes found; stashing them as 'pre-update $stamp'."
-    Write-Host "  (Recover with: git stash list / git stash pop)"
+    Write-Host "  Local changes found; setting them aside as 'pre-update $stamp'."
+    $stashed = $true
     git stash push -u -m "pre-update $stamp" | Out-Null
     if ($LASTEXITCODE -ne 0) {
         Write-Host ""
@@ -98,4 +99,12 @@ Write-Host ""
 
 Write-Host "  Update complete. Build: $after"
 Write-Host "  Restart DaVinci Resolve, then run Workspace > Scripts > LAB37 Check."
+if ($stashed) {
+    # Setup prints ~40 lines, so the earlier notice has scrolled off.
+    Write-Host ""
+    Write-Host "  ----------------------------------------"
+    Write-Host "   NOTE: you had local changes. They were set aside, not deleted."
+    Write-Host "   Get them back with:  git stash pop"
+    Write-Host "  ----------------------------------------"
+}
 Write-Host ""
