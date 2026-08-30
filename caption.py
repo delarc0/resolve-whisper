@@ -1148,6 +1148,7 @@ def run_resolve_mode(args):
                                  "SRT in the Media Pool instead of guessing.")
             if not same_timeline:
                 imported_to_pool = True  # keep the Media Pool fallback path
+
         def _subtitle_item_count():
             """Total items across every subtitle track.
 
@@ -1402,7 +1403,9 @@ def run_check_mode(args):
     try:
         import version
         log.info(f"  [INFO] build {version.version_string()}")
-        behind = version.behind_by()
+        # Costs one network round trip, capped at 15s and silent
+        # offline. Without the fetch this is always 0.
+        behind = version.behind_by(fetch=True)
         if behind > 0:
             warnings.append(
                 f"{behind} update(s) behind origin -- run ./update.sh "

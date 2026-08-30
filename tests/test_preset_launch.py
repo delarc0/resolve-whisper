@@ -69,8 +69,10 @@ class TestLauncherContract(unittest.TestCase):
     def test_presets_do_not_assign_lab37_globals(self):
         for path in preset_files():
             src = open(path, encoding="utf-8").read()
-            self.assertNotRegex(
-                src, r"^\s*LAB37_\w+\s*=", 
+            # re.M matters: without it "^" only matches the start of the
+            # whole file, so this assertion could never fail.
+            self.assertIsNone(
+                re.search(r"^\s*LAB37_\w+\s*=", src, re.M),
                 f"{os.path.basename(path)}: sets a global that cannot cross")
 
 

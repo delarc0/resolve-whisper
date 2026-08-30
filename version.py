@@ -17,12 +17,18 @@ APP_DIR = os.path.dirname(os.path.abspath(__file__))
 _cache = None
 
 
-def _git(*args):
+def _git(*args, timeout=5):
     """Run a git command in the app dir, or return None if it can't."""
+    env = dict(os.environ)
+    # Never let git stop for a credential prompt: this runs inside a detached
+    # subprocess with no one to type into it, and it would hang until the
+    # timeout instead of failing fast.
+    env["GIT_TERMINAL_PROMPT"] = "0"
     try:
         out = subprocess.run(
             ("git", "-C", APP_DIR) + args,
-            capture_output=True, text=True, timeout=5,
+            capture_output=True, text=True, timeout=timeout,
+            stdin=subprocess.DEVNULL, env=env,
         )
     except (OSError, subprocess.SubprocessError):
         return None  # git not installed, or hung
@@ -63,13 +69,20 @@ def version_string() -> str:
     return _cache
 
 
-def behind_by() -> int:
+def behind_by(fetch: bool = False) -> int:
     """How many commits behind origin this checkout is, or -1 if unknown.
 
-    Deliberately does NOT fetch: this is called from the pre-flight check,
-    which must stay fast and work offline. It compares against the last
-    known origin state, so it under-reports rather than blocking.
+    `HEAD..@{upstream}` compares against the remote-tracking ref, which only
+    moves on fetch. Without one this answers 0 on exactly the machine the
+    check exists for: someone who cloned weeks ago and never fetched is
+    behind, and their tracking ref still says they are not. So callers that
+    want a real answer pass fetch=True.
+
+    Offline stays a silent 0/-1 rather than an error: a health check must
+    still pass on a machine with no network.
     """
+    if fetch:
+        _git("fetch", "--quiet", "origin", timeout=15)
     count = _git("rev-list", "--count", "HEAD..@{upstream}")
     if count is None or not count.isdigit():
         return -1

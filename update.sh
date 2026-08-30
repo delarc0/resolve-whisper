@@ -47,6 +47,17 @@ fi
 echo "  Fetching..."
 git fetch --quiet origin
 
+# A checkout that tracks nothing fails the merge below with a message about
+# divergence, which sends the reader looking for the wrong problem.
+if ! git rev-parse --abbrev-ref --symbolic-full-name "@{upstream}" >/dev/null 2>&1; then
+    echo ""
+    echo "  ERROR: this copy isn't tracking a branch on GitHub, so there's"
+    echo "  nothing to update from. Send this to Erik:"
+    echo ""
+    git status --short --branch | head -5
+    exit 1
+fi
+
 # --ff-only: refuse to invent a merge commit on a user's machine. If the
 # checkout has diverged, that needs a human, not a script guessing.
 if ! git merge --ff-only "@{upstream}" --quiet 2>/dev/null; then

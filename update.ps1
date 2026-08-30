@@ -43,6 +43,18 @@ if (git status --porcelain) {
 Write-Host "  Fetching..."
 git fetch --quiet origin
 
+# A checkout that tracks nothing fails the merge below with a message about
+# divergence, which sends the reader looking for the wrong problem.
+git rev-parse --abbrev-ref --symbolic-full-name "@{upstream}" 2>$null | Out-Null
+if ($LASTEXITCODE -ne 0) {
+    Write-Host ""
+    Write-Host "  ERROR: this copy isn't tracking a branch on GitHub, so there's"
+    Write-Host "  nothing to update from. Send this to Erik:"
+    Write-Host ""
+    git status --short --branch
+    exit 1
+}
+
 # --ff-only: refuse to invent a merge commit on a user's machine.
 git merge --ff-only "@{upstream}" --quiet 2>$null
 if ($LASTEXITCODE -ne 0) {
