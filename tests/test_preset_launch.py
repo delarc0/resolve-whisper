@@ -138,10 +138,18 @@ class TestAutoPlaceGuard(unittest.TestCase):
         # The OUTER decision is on items. AddTrack is still gated on track
         # count inside it, so match on ordering rather than forbidding a
         # substring the fix legitimately contains.
-        block = self.src.split("if imported_to_pool and same_timeline:", 1)[1][:1200]
+        # Assert the marker and both tokens exist before comparing offsets.
+        # A reworded marker used to raise IndexError, and a block grown past
+        # the window made tracks_at -1, which failed with a message blaming
+        # the guard order instead of the real cause.
+        marker = "if imported_to_pool and same_timeline:"
+        self.assertIn(marker, self.src, "auto-place block not found")
+        block = self.src.split(marker, 1)[1][:1600]
         items_at = block.find("if existing_items == 0:")
         tracks_at = block.find("if existing_sub_tracks == 0:")
         self.assertGreater(items_at, -1, "auto-place is not gated on item count")
+        self.assertGreater(tracks_at, -1,
+                           "AddTrack guard not found in the inspected block")
         self.assertGreater(tracks_at, items_at,
                            "track count is still the outer guard; an empty "
                            "Subtitle 1 would block auto-place")

@@ -214,8 +214,8 @@ Every row must say **PASS**. Common failures:
     without re-running setup: run `./update.sh` (Mac) / `.\update.ps1`
     (Windows), which does both.
   - `[LAB37 Whisper] ERROR: app dir not resolved` (note: `Whisper`, not the
-    preset's name) → the preset-to-launcher handoff failed. Fixed in builds
-    after 2026-08-30; update.
+    preset's name) → the preset-to-launcher handoff failed. Fixed in
+    ce6b89c (2026-08-30) and later; update.
 
 ## Phase 5 - First captions (walk the user through it)
 

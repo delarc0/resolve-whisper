@@ -148,7 +148,9 @@ Local edits are stashed, not discarded (`git stash pop` to get them back).
 Restart Resolve afterwards, then run **LAB37 Check**.
 
 To see which build you are on, run LAB37 Check, or look at the first line of
-`/tmp/resolve_whisper.log`: `resolve-whisper build <sha> (<date>)`.
+the run log: `resolve-whisper build <sha> (<date>)`. The log is
+`/tmp/resolve_whisper.log` on Mac and `%TEMP%\resolve_whisper.log` on
+Windows.
 
 ---
 

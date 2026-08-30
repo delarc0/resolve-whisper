@@ -124,7 +124,8 @@ site explain why. Summary so they aren't "simplified" away:
 - `version.py` stamps a build id into every run log and the health check, so
   a bug report from another machine says which code produced it.
 - Live verification needs Resolve Studio running: `caption.py --check`
-  (or Workspace > Scripts > Edit > LAB37 Check).
+  (or Workspace > Scripts > LAB37 Check; some Resolve versions put
+  the entries under an Edit submenu instead).
 - Resolve API version gotchas (21.x job-key renames, the factory Audio Only
   preset, the SRT drag-crash bug) are handled by compat shims and documented
   inline where they live. Don't remove them; Resolve 18-21 must all work.

@@ -5,6 +5,10 @@
 # living in Resolve's Scripts folder, so a pull updates the launcher while
 # leaving stale presets behind. Updating always means pull + setup.
 $ErrorActionPreference = "Stop"
+# NB: ErrorActionPreference does NOT apply to native executables, so every
+# git call below has to have its exit code checked by hand. Without that,
+# a failed fetch falls through to a merge against the stale tracking ref
+# and prints "Already up to date" at someone who just failed to update.
 
 $AppDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $AppDir
@@ -38,10 +42,24 @@ if (git status --porcelain) {
     Write-Host "  Local changes found; stashing them as 'pre-update $stamp'."
     Write-Host "  (Recover with: git stash list / git stash pop)"
     git stash push -u -m "pre-update $stamp" | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host ""
+        Write-Host "  ERROR: could not set your local changes aside, so the update"
+        Write-Host "  stopped rather than touching them. Send this to Erik:"
+        Write-Host ""
+        git status --short --branch
+        exit 1
+    }
 }
 
 Write-Host "  Fetching..."
 git fetch --quiet origin
+if ($LASTEXITCODE -ne 0) {
+    Write-Host ""
+    Write-Host "  ERROR: could not reach GitHub. Check the network connection,"
+    Write-Host "  then run this again."
+    exit 1
+}
 
 # A checkout that tracks nothing fails the merge below with a message about
 # divergence, which sends the reader looking for the wrong problem.
