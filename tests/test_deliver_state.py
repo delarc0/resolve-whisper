@@ -73,14 +73,13 @@ class TestDeliverSettingsRestored(unittest.TestCase):
                       "restoring must not clear the user's own output path "
                       "when we never captured one")
 
-    def test_failed_probe_clears_rather_than_leaving_our_path(self):
-        body = function_body("_restore_deliver_state")
-        self.assertIn("if snapshot_failed:", body)
-        self.assertIn('"TargetDir": ""', body)
-        for fn in ("render_audio", "run_check_mode"):
-            f = function_body(fn)
-            self.assertIn("snapshot_failed", f,
-                          f"{fn} does not track a failed output-path probe")
+    def test_restore_call_sites_pass_both_conditions(self):
+        # Asserting the identifier exists would pass even if the flag were
+        # never handed to the restore, so match the actual argument.
+        for fn, expr in (("render_audio", "snapshot_failed and output_mutated"),
+                         ("run_check_mode", "_snapshot_failed and _output_mutated")):
+            self.assertIn(expr, function_body(fn),
+                          f"{fn} does not gate clearing on both conditions")
 
     def test_check_mode_restores_too(self):
         # A health check that edits the user's project is worse than no check.

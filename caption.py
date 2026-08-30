@@ -685,7 +685,7 @@ def _restore_page(resolve, saved_page):
 
 def _restore_deliver_state(project, saved_fmt: dict, saved_mode,
                            saved_target_dir=None, saved_custom_name=None,
-                           snapshot_failed: bool = False):
+                           clear_unknown_output: bool = False):
     """Put the Deliver page back to roughly what the user had before our run.
 
     We can restore format/codec/mode (the API exposes getters) but not the
@@ -706,11 +706,13 @@ def _restore_deliver_state(project, saved_fmt: dict, saved_mode,
     # (the old behaviour) destroyed the user's Deliver page path and filename
     # on every run AND every health check -- our temp dir was not the only
     # thing being cleared.
-    if snapshot_failed:
-        # We overwrote TargetDir but the probe never told us the old value.
-        # Leaving OURS in place would silently redirect the user's next
-        # export into the captions folder, which is worse than an empty
-        # field they will be prompted to fill.
+    if clear_unknown_output:
+        # Set ONLY when we actually overwrote TargetDir and the probe never
+        # told us the old value. Leaving OURS in place would silently
+        # redirect the user's next export into the captions folder, which is
+        # worse than an empty field they get prompted to fill. Clearing when
+        # we never touched the fields would be destroying settings for
+        # nothing, so both conditions have to hold.
         log.warning("Could not read your Deliver output path before changing "
                     "it; clearing it rather than leaving the tool's path there.")
         _safe(project.SetRenderSettings, {"TargetDir": "", "CustomName": ""})
@@ -876,6 +878,7 @@ def render_audio(project, timeline, output_dir: str, fps: float = 0.0):
     saved_target_dir = None
     saved_custom_name = None
     snapshot_failed = True
+    output_mutated = False   # did we actually overwrite TargetDir/CustomName?
     probe_id = _safe(project.AddRenderJob)
     if probe_id:
         try:
@@ -897,9 +900,10 @@ def render_audio(project, timeline, output_dir: str, fps: float = 0.0):
         # the Deliver page back rather than assuming nothing changed.
         _restore_deliver_state(project, saved_fmt, saved_mode,
                                saved_target_dir, saved_custom_name,
-                               snapshot_failed)
+                               snapshot_failed and output_mutated)
         return None, 0.0
 
+    output_mutated = True
     if not _safe(project.SetRenderSettings, {
         "TargetDir": output_dir,
         "CustomName": wav_name,
@@ -911,7 +915,7 @@ def render_audio(project, timeline, output_dir: str, fps: float = 0.0):
         log.error("AddRenderJob returned no id.")
         _restore_deliver_state(project, saved_fmt, saved_mode,
                                saved_target_dir, saved_custom_name,
-                               snapshot_failed)
+                               snapshot_failed and output_mutated)
         return None, 0.0
 
     # Validate the queued job actually exports audio (catches a tampered preset).
@@ -930,7 +934,7 @@ def render_audio(project, timeline, output_dir: str, fps: float = 0.0):
         _delete_job_if_ours(project, job_id, pre_existing_ids)
         _restore_deliver_state(project, saved_fmt, saved_mode,
                                saved_target_dir, saved_custom_name,
-                               snapshot_failed)
+                               snapshot_failed and output_mutated)
         return None, 0.0
     codec_note = _audio_codec_warning(job_settings)
     if codec_note:
@@ -1027,7 +1031,7 @@ def render_audio(project, timeline, output_dir: str, fps: float = 0.0):
         _delete_job_if_ours(project, job_id, pre_existing_ids)
         _restore_deliver_state(project, saved_fmt, saved_mode,
                                saved_target_dir, saved_custom_name,
-                               snapshot_failed)
+                               snapshot_failed and output_mutated)
 
 
 def run_resolve_mode(args):
@@ -1583,6 +1587,7 @@ def run_check_mode(args):
         _probe_ids = {j.get("JobId") for j in _probe_existing
                       if isinstance(j, dict) and j.get("JobId")}
         _snapshot_failed = True
+        _output_mutated = False
         _probe_id = _safe(project.AddRenderJob)
         if _probe_id:
             try:
@@ -1606,6 +1611,7 @@ def run_check_mode(args):
                 project.LoadRenderPreset(_AUDIO_PRESET_NAME)
                 # Resolve 21: AddRenderJob returns no id unless a target dir
                 # is set. Use the temp dir; we delete the probe job anyway.
+                _output_mutated = True
                 _safe(project.SetRenderSettings, {"TargetDir": tempfile.gettempdir()})
                 test_job_id = None
                 try:
@@ -1673,7 +1679,7 @@ def run_check_mode(args):
         finally:
             _restore_deliver_state(project, saved_fmt, saved_mode,
                                    saved_target_dir, saved_custom_name,
-                                   _snapshot_failed)
+                                   _snapshot_failed and _output_mutated)
             _restore_page(resolve, saved_page)
 
     log.info("")

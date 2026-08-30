@@ -41,7 +41,7 @@ class TestPresetScriptRestoresDeliver(unittest.TestCase):
 
     def test_passes_the_snapshot_to_the_restore(self):
         self.assertIn("saved_target_dir, saved_custom_name,\n"
-                      "                               snapshot_failed)",
+                      "                               snapshot_failed and output_mutated)",
                       PRESET_SCRIPT)
 
     def test_a_failed_probe_does_not_leave_our_path_behind(self):
@@ -50,6 +50,8 @@ class TestPresetScriptRestoresDeliver(unittest.TestCase):
         # the user's next export.
         self.assertIn("snapshot_failed = True", PRESET_SCRIPT)
         self.assertIn("snapshot_failed = False", PRESET_SCRIPT)
+        # ...and clearing is gated on having actually changed the fields.
+        self.assertIn("output_mutated = True", PRESET_SCRIPT)
 
     def test_restores_the_page_too(self):
         self.assertIn("_restore_page(resolve, saved_page)", PRESET_SCRIPT)

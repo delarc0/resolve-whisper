@@ -151,6 +151,7 @@ def main():
     _pre = _safe(project.GetRenderJobList, _default=[]) or []
     _pre_ids = {j.get("JobId") for j in _pre if isinstance(j, dict) and j.get("JobId")}
     snapshot_failed = True
+    output_mutated = False   # _validate() is what overwrites TargetDir
     _probe_id = _safe(project.AddRenderJob)
     if _probe_id:
         try:
@@ -198,6 +199,7 @@ def main():
 
         if already_exists:
             log.info(f"'{PRESET_NAME}' exists; validating...")
+            output_mutated = True
             problems = _validate(project)
             if problems:
                 log.error(f"Existing preset is misconfigured: {'; '.join(problems)}")
@@ -211,6 +213,7 @@ def main():
             return rc
 
         log.info("Validating new preset...")
+        output_mutated = True
         problems = _validate(project)
         if problems:
             log.error(f"Newly-created preset is misconfigured: {'; '.join(problems)}")
@@ -220,7 +223,7 @@ def main():
     finally:
         _restore_deliver_state(project, saved_fmt, saved_mode,
                                saved_target_dir, saved_custom_name,
-                               snapshot_failed)
+                               snapshot_failed and output_mutated)
         _restore_page(resolve, saved_page)
 
 
