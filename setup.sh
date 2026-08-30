@@ -95,6 +95,10 @@ mkdir -p "$RESOLVE_SCRIPTS"
 #   macOS. Hidden on Resolve 20 (Utility menu bug) but Resolve 21 shows it
 #   again, so it must go or users click the wrong entry.
 rm -f "$RESOLVE_SCRIPTS/_launcher.lua"
+# Hand-edited preset backups (*.orig) from someone debugging a broken install:
+# harmless as files, but a stray "LAB37 X.orig.lua" would show up as a second,
+# stale menu entry next to the real one.
+rm -f "$RESOLVE_SCRIPTS/LAB37 "*.orig "$RESOLVE_SCRIPTS/LAB37 "*.orig.lua 2>/dev/null || true
 rm -f "$HOME/Library/Application Support/Blackmagic Design/DaVinci Resolve/Fusion/Scripts/Utility/LAB37 Resolve Whisper.py"
 # Preset menu entries: one per common workflow
 cp "$APP_DIR/presets/LAB37 Reels.lua"   "$RESOLVE_SCRIPTS/"
@@ -113,15 +117,18 @@ import mlx_whisper, numpy as np
 mlx_whisper.transcribe(np.zeros(16000, dtype=np.float32), path_or_hf_repo='mlx-community/whisper-large-v3-mlx')
 " 2>/dev/null && echo "         Model ready." || echo "         Model will download on first use instead."
 
+BUILD="$("$APP_DIR/.venv/bin/python3" "$APP_DIR/version.py" 2>/dev/null || echo unknown)"
+
 echo ""
 echo "  ========================================"
-echo "   SETUP COMPLETE"
+echo "   SETUP COMPLETE  (build $BUILD)"
 echo "  ========================================"
 echo ""
 echo "  How to use:"
 echo "    1. Open DaVinci Resolve Studio"
 echo "    2. Select a timeline, set in/out points (I and O)"
-echo "    3. Workspace > Scripts > Edit > LAB37 (pick a preset):"
+echo "    3. Workspace > Scripts > LAB37 (pick a preset)"
+echo "       (on some Resolve versions they sit under an Edit submenu)"
 echo "       - LAB37 Reels    -- single-line SRT, 1-3 words, no punctuation"
 echo "       - LAB37 Podcast  -- plain SRT, full sentences"
 echo "       - LAB37 Auto     -- auto-detect language, plain SRT"
@@ -134,6 +141,7 @@ echo "       (never drag an .srt from Finder into Resolve -- it crashes Resolve 
 echo ""
 echo "  Captions are saved to: ~/Desktop/Captions/ (auto-cleaned after 30 days)"
 echo "  Live progress log:      /tmp/resolve_whisper.log"
+echo "  To update later:        ./update.sh"
 echo ""
 echo "  LAB37 TOOLS // lab37.tools"
 echo ""

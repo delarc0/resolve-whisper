@@ -120,7 +120,11 @@ output yourself - every section should end in OK.
    **restart Resolve**.
 3. Ask them to open any project and any timeline (a scratch/test project is
    fine - ask them to pick one that isn't important).
-4. Guide them to **Workspace > Scripts > Edit > LAB37 Check** in the menu bar.
+4. Guide them to **Workspace > Scripts > LAB37 Check** in the menu bar.
+   The LAB37 entries appear directly in the Scripts menu on Resolve 21
+   (alongside `Comp`/`Color`/`Deliver` submenus). On some versions they sit
+   under an `Edit` submenu instead - check both before concluding anything
+   is wrong.
 5. Wait ~15 seconds, then read the result yourself:
 
 ```
@@ -139,14 +143,22 @@ Every row must say **PASS**. Common failures:
   (Windows) → re-run setup (`./setup.sh` on Mac, `.\setup.ps1` on Windows)
   and read its output.
 - If `./setup.sh` reports `permission denied`, run `bash setup.sh` instead.
-- No log file at all → the menu entry didn't run; re-run setup so the Lua
-  launchers get copied, restart Resolve, try again.
+- No log file at all → the menu entry didn't run. Open **Workspace >
+  Console** in Resolve and click the entry again; the reason prints there.
+  - `[LAB37 ...] ERROR: pointer file not found` or `launcher missing` →
+    re-run setup so the Lua launchers get copied, restart Resolve, try again.
+  - `[LAB37 ...] ERROR: launcher is out of date` → the code was pulled
+    without re-running setup: run `./update.sh` (Mac) / `.\update.ps1`
+    (Windows), which does both.
+  - `[LAB37 Whisper] ERROR: app dir not resolved` (note: `Whisper`, not the
+    preset's name) → the preset-to-launcher handoff failed. Fixed in builds
+    after 2026-08-30; update.
 
 ## Phase 5 - First captions (walk the user through it)
 
 1. In a timeline with speech, set **in and out points** (press `I` at the
    start, `O` at the end of the section).
-2. **Workspace > Scripts > Edit >** pick one:
+2. **Workspace > Scripts >** pick one (see the menu note in Phase 4):
    - **LAB37 Reels** - Swedish, 1-3 word captions for 9:16 reels
    - **LAB37 Podcast** - Swedish, full sentences
    - **LAB37 Auto** - auto-detect language, full sentences
@@ -256,3 +268,9 @@ There's no separate step 3; once setup.ps1 finishes cleanly, go to **Phase 4**
   asked.
 - After any DaVinci Resolve update: re-run setup (`./setup.sh` on Mac,
   `.\setup.ps1` on Windows), then LAB37 Check.
+- To update the tool itself: `./update.sh` (Mac) or `.\update.ps1`
+  (Windows). It pulls and re-runs setup. A bare `git pull` is NOT enough -
+  the menu presets are copies inside Resolve's Scripts folder, so pulling
+  alone leaves them stale.
+- Which build is a user on? The first line of any run log says
+  `resolve-whisper build <sha> (<date>)`, and LAB37 Check reports it too.

@@ -606,6 +606,24 @@ def _set_wav_format_compat(project):
     return None
 
 
+def _restore_page(resolve, saved_page):
+    """Put the user back on the page they started on.
+
+    Resolve switches itself to Deliver during AddRenderJob/StartRendering,
+    so ANY exit before the end of the happy path (render failed, no speech,
+    cancelled, Resolve lost) used to strand the user on the Deliver page
+    looking at a queue. Restoring the page they were actually on beats
+    hardcoding "edit": a colourist who started on Color should land on Color.
+    """
+    if not resolve or not saved_page:
+        return
+    try:
+        if resolve.GetCurrentPage() != saved_page:
+            resolve.OpenPage(saved_page)
+    except Exception as e:
+        log.debug(f"page restore failed: {e}")
+
+
 def _restore_deliver_state(project, saved_fmt: dict, saved_mode,
                            saved_target_dir=None, saved_custom_name=None):
     """Put the Deliver page back to roughly what the user had before our run.
@@ -792,16 +810,24 @@ def render_audio(project, timeline, output_dir: str, fps: float = 0.0):
     saved_custom_name = None
     probe_id = _safe(project.AddRenderJob)
     if probe_id:
-        for j in (_safe(project.GetRenderJobList, _default=[]) or []):
-            if isinstance(j, dict) and j.get("JobId") == probe_id:
-                saved_target_dir = j.get("TargetDir")
-                saved_custom_name = j.get("CustomName")
-                break
-        _delete_job_if_ours(project, probe_id, pre_existing_ids)
+        try:
+            for j in (_safe(project.GetRenderJobList, _default=[]) or []):
+                if isinstance(j, dict) and j.get("JobId") == probe_id:
+                    saved_target_dir = j.get("TargetDir")
+                    saved_custom_name = j.get("CustomName")
+                    break
+        finally:
+            # Delete the probe even if the readback raises, or it leaks
+            # into the user's render queue.
+            _delete_job_if_ours(project, probe_id, pre_existing_ids)
 
     log.info(f"Loading '{_AUDIO_PRESET_NAME}' preset...")
     if not _safe(project.LoadRenderPreset, _AUDIO_PRESET_NAME):
         log.error(f"LoadRenderPreset('{_AUDIO_PRESET_NAME}') failed.")
+        # A failed load can still have applied part of the preset, so put
+        # the Deliver page back rather than assuming nothing changed.
+        _restore_deliver_state(project, saved_fmt, saved_mode,
+                               saved_target_dir, saved_custom_name)
         return None, 0.0
 
     if not _safe(project.SetRenderSettings, {
@@ -953,6 +979,8 @@ def run_resolve_mode(args):
     ui_proc = None if getattr(args, "no_ui", False) else _spawn_progress_ui()
     _install_cancel_signal()
     tmp_dir = None
+    resolve = None
+    saved_page = None
 
     try:
         _write_status("starting", "Connecting to Resolve...")
@@ -960,6 +988,9 @@ def run_resolve_mode(args):
         if not resolve:
             _write_status("error", "Resolve isn't running. Open Resolve Studio and try again.")
             return 1
+        # Where the user was before we started. The finally puts them back;
+        # rendering drags them to Deliver otherwise.
+        saved_page = _safe(resolve.GetCurrentPage)
 
         project, timeline, fps = get_timeline_info(resolve)
         if not project:
@@ -1064,7 +1095,10 @@ def run_resolve_mode(args):
             return 1
 
         # Switch back to Edit page so the user lands where they expect
-        # (Resolve briefly switches to Deliver during AddRenderJob in some versions).
+        # (Resolve briefly switches to Deliver during AddRenderJob in some
+        # versions). Also make Edit the restore target, so the finally that
+        # handles the failure paths doesn't undo this on the way out.
+        saved_page = "edit"
         try:
             resolve.OpenPage("edit")
         except Exception as e:
@@ -1079,9 +1113,12 @@ def run_resolve_mode(args):
         #   reliable signal is counting items on the subtitle track after
         # - it fails (places nothing) when another collaborator holds the
         #   timeline lock -- that's the fallback path below
-        # - it targets subtitle track 1, so we only auto-place onto a
-        #   timeline with NO existing subtitle tracks; if tracks exist we
-        #   must not risk stacking onto someone's hand-edited captions
+        # - it targets subtitle track 1, so we only auto-place when no
+        #   subtitle track holds any items. The guard is about not stacking
+        #   onto someone's hand-edited captions, so it counts ITEMS, not
+        #   tracks: Resolve leaves an empty 'Subtitle 1' behind as soon as
+        #   anyone has touched subtitles once, and keying off track count
+        #   sent those users to the Media Pool fallback for no reason.
         imported_to_pool = False
         auto_placed = False
         media_pool = _safe(project.GetMediaPool)
@@ -1111,25 +1148,56 @@ def run_resolve_mode(args):
                                  "SRT in the Media Pool instead of guessing.")
             if not same_timeline:
                 imported_to_pool = True  # keep the Media Pool fallback path
+        def _subtitle_item_count():
+            """Total items across every subtitle track.
+
+            Re-reads the track count each call because AddTrack changes it,
+            and counts all tracks rather than assuming track 1 so the
+            placement check holds however Resolve numbers them.
+            """
+            tracks = _safe(timeline.GetTrackCount, "subtitle", _default=0) or 0
+            total = 0
+            for idx in range(1, tracks + 1):
+                items = _safe(timeline.GetItemListInTrack, "subtitle", idx,
+                              _default=[]) or []
+                total += len(items)
+            return total
+
         if imported_to_pool and same_timeline:
             existing_sub_tracks = _safe(timeline.GetTrackCount, "subtitle", _default=0) or 0
-            if existing_sub_tracks == 0:
-                _safe(timeline.AddTrack, "subtitle")
+            existing_items = _subtitle_item_count()
+            if existing_items == 0:
+                # Reuse an existing empty track: AppendToTimeline targets
+                # subtitle track 1, so adding a second track here would
+                # place onto a track the user isn't looking at.
+                if existing_sub_tracks == 0:
+                    _safe(timeline.AddTrack, "subtitle")
                 _safe(media_pool.AppendToTimeline, list(pool_items))
-                placed = _safe(timeline.GetItemListInTrack, "subtitle", 1, _default=[]) or []
-                auto_placed = len(placed) > 0
+                placed = _subtitle_item_count()
+                auto_placed = placed > 0
                 if auto_placed:
-                    log.info(f"Captions placed on subtitle track ({len(placed)} items).")
+                    log.info(f"Captions placed on subtitle track ({placed} items).")
+                else:
+                    log.info("AppendToTimeline placed nothing (timeline locked by "
+                             "a collaborator?); falling back to the Media Pool.")
             else:
-                log.info("Timeline already has subtitle track(s); not auto-placing to avoid mixing with existing captions.")
+                log.info(f"Timeline already has {existing_items} subtitle item(s); "
+                         "not auto-placing to avoid mixing with existing captions.")
 
         log.info("")
         log.info(f"SRT saved to: {srt_path}")
         if auto_placed:
             _write_status("done", "Captions are on your timeline.", progress=100)
         elif imported_to_pool:
+            # ImportMedia returns a truthy handle, but on Resolve 21.0.4 the
+            # imported .srt has been observed NOT to show up when walking the
+            # pool, so "find it in the Media Pool" can be a dead end. Give the
+            # route that always works (the file is on disk) first.
             log.info("SRT imported into the Media Pool.")
-            log.info("In Resolve: right-click it > Insert Selected Subtitles to Timeline.")
+            log.info("If you can see it there: right-click > Insert Selected "
+                     "Subtitles to Timeline.")
+            log.info("If you can't find it: File > Import > Subtitle, and pick "
+                     f"{srt_path}")
             log.info("(Avoid dragging SRTs from Finder -- Resolve 21.0.2 can crash on that.)")
             _write_status("done", "In Media Pool: right-click > Insert Selected Subtitles", progress=100)
         else:
@@ -1145,6 +1213,10 @@ def run_resolve_mode(args):
         _write_status("error", str(e))
         raise
     finally:
+        # Put the user back where they started. Unconditional: the whole
+        # point is the failure paths, where Resolve has parked them on
+        # Deliver and nothing else would move them off it.
+        _restore_page(resolve, saved_page)
         # Always clean up the temp render dir, success or fail.
         if tmp_dir:
             try:
@@ -1327,6 +1399,16 @@ def run_check_mode(args):
             failures.append(name)
 
     log.info("=== Resolve Whisper pre-flight check ===")
+    try:
+        import version
+        log.info(f"  [INFO] build {version.version_string()}")
+        behind = version.behind_by()
+        if behind > 0:
+            warnings.append(
+                f"{behind} update(s) behind origin -- run ./update.sh "
+                "(Mac) or update.ps1 (Windows)")
+    except Exception as e:
+        log.debug(f"version lookup failed: {e}")
 
     # 1. Python version
     pyver = sys.version_info
@@ -1379,9 +1461,14 @@ def run_check_mode(args):
 
     # 5. Connect to Resolve (only if module imported)
     resolve = None
+    saved_page = None
     if "DaVinciResolveScript importable" not in failures:
         resolve = get_resolve()
         _row("Connect to Resolve", bool(resolve), "is Resolve running?")
+        # The preset probe below queues render jobs, which switches Resolve
+        # to the Deliver page. A health check must not relocate the user.
+        if resolve:
+            saved_page = _safe(resolve.GetCurrentPage)
 
     project = None
     timeline = None
@@ -1420,12 +1507,16 @@ def run_check_mode(args):
                       if isinstance(j, dict) and j.get("JobId")}
         _probe_id = _safe(project.AddRenderJob)
         if _probe_id:
-            for j in (_safe(project.GetRenderJobList, _default=[]) or []):
-                if isinstance(j, dict) and j.get("JobId") == _probe_id:
-                    saved_target_dir = j.get("TargetDir")
-                    saved_custom_name = j.get("CustomName")
-                    break
-            _delete_job_if_ours(project, _probe_id, _probe_ids)
+            try:
+                for j in (_safe(project.GetRenderJobList, _default=[]) or []):
+                    if isinstance(j, dict) and j.get("JobId") == _probe_id:
+                        saved_target_dir = j.get("TargetDir")
+                        saved_custom_name = j.get("CustomName")
+                        break
+            finally:
+                # Delete the probe even if the readback raises, or it leaks
+                # into the user's render queue.
+                _delete_job_if_ours(project, _probe_id, _probe_ids)
         try:
             presets = project.GetRenderPresetList() or []
             if _AUDIO_PRESET_NAME in presets:
@@ -1502,6 +1593,7 @@ def run_check_mode(args):
         finally:
             _restore_deliver_state(project, saved_fmt, saved_mode,
                                saved_target_dir, saved_custom_name)
+            _restore_page(resolve, saved_page)
 
     log.info("")
     if failures:
@@ -1554,6 +1646,14 @@ def _attach_windows_run_log():
 
 def main():
     _attach_windows_run_log()
+    # Stamp the build into every run log. Bug reports arrive as a log file
+    # from someone else's machine; without this the first question is always
+    # "which version are you on?" and the answer is usually a guess.
+    try:
+        import version
+        log.info(f"resolve-whisper build {version.version_string()}")
+    except Exception as e:
+        log.debug(f"version stamp unavailable: {e}")
     parser = argparse.ArgumentParser(
         description="Resolve Whisper - AI caption generation",
         formatter_class=argparse.RawDescriptionHelpFormatter,

@@ -18,11 +18,12 @@ assisting non-technical users. Human-facing instructions live in README.md.
 
 ## Architecture (Mac is the primary platform)
 
-- `presets/*.lua` - Resolve menu entries (Workspace > Scripts > Edit); thin:
-  each sets tool/args, reads the pointer file for the install dir, then
-  dofile()s the shared launcher
+- `presets/*.lua` - Resolve menu entries (Workspace > Scripts); thin: each
+  holds tool/args, reads the pointer file for the install dir, then dofile()s
+  the shared launcher and CALLS the function it returns
 - `preset_launch.lua` - the one cross-platform launcher (lives in the app
-  dir, NOT Scripts/Edit, so it isn't its own menu entry). Runs caption.py
+  dir, NOT Scripts/Edit, so it isn't its own menu entry). Returns a FUNCTION;
+  see the globals invariant below. Runs caption.py
   detached with the preset's args; no env exports (caption.py bootstraps the
   Resolve module path itself), so no fragile per-OS shell quoting
 - `platforminfo.py` - single OS boundary: flags, Resolve scripts/API/lib
@@ -94,11 +95,34 @@ site explain why. Summary so they aren't "simplified" away:
   zero-duration guard compares MILLISECONDS (the SRT's resolution).
 - **SRT cleanup only sweeps the tool's own default folder**, and logs every
   filename it deletes.
+- **Lua globals do not cross `dofile()`** in Resolve's sandbox. The launcher
+  takes `(TOOL, ARGS, app_dir)` as ARGUMENTS and each preset calls the
+  returned function. Setting `LAB37_*` globals looks right, passes review,
+  and makes every menu entry a silent no-op: the launcher sees nil for all
+  of them. Verified under `fuscript -l lua`; tests/test_preset_launch.py
+  pins it.
+- **Auto-place is gated on subtitle ITEMS, not tracks.** Resolve leaves an
+  empty `Subtitle 1` behind for anyone who has touched subtitles once, and
+  gating on track count sent those users to a Media Pool fallback that does
+  not reliably work on Resolve 21.0.4 (imported SRTs are not always
+  enumerable in the pool).
+- **The Deliver page is borrowed, not owned.** Rendering mutates the render
+  preset, format/codec, output path, the queue, and the page the user is
+  looking at. Every one is snapshotted and restored in a `finally`, on the
+  failure paths too - Resolve parks users on Deliver during AddRenderJob,
+  and an early return used to leave them there. Only jobs we added are ever
+  deleted.
 
 ## Development
 
 - Tests: `./.venv/bin/python -m unittest discover -s tests` - pure logic,
-  no Resolve required. Run after any change.
+  no Resolve required. Run after any change. A few tests additionally drive
+  Resolve's own `fuscript` when it is installed, and skip when it isn't.
+- Updating an install is `./update.sh` / `.\update.ps1` (pull + setup).
+  Never tell a user to `git pull` alone: the presets are copies inside
+  Resolve's Scripts folder and would stay stale.
+- `version.py` stamps a build id into every run log and the health check, so
+  a bug report from another machine says which code produced it.
 - Live verification needs Resolve Studio running: `caption.py --check`
   (or Workspace > Scripts > Edit > LAB37 Check).
 - Resolve API version gotchas (21.x job-key renames, the factory Audio Only

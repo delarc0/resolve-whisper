@@ -41,7 +41,8 @@ automatically on both platforms.
 
 1. Open **DaVinci Resolve Studio** and select a timeline
 2. Set your **in and out points** (I and O keys) for the section you want captioned
-3. Go to **Workspace > Scripts > Edit** and pick a preset:
+3. Go to **Workspace > Scripts** and pick a preset (on some Resolve
+   versions they sit under an **Edit** submenu):
    - **LAB37 Reels** - single-line Swedish captions, 1-3 words, no punctuation (9:16 reels)
    - **LAB37 Podcast** - plain Swedish SRT, full sentences
    - **LAB37 Auto** - auto-detect language, plain SRT
@@ -132,11 +133,30 @@ timeline start rather than risk shifting them wrongly.
 
 ---
 
+## Updating
+
+```
+./update.sh          # Mac
+.\update.ps1         # Windows
+```
+
+Pulls the latest code and re-runs setup. Use this rather than `git pull` on
+its own: the menu entries are copies that live inside Resolve's Scripts
+folder, so pulling alone updates the engine and leaves the buttons stale.
+
+Local edits are stashed, not discarded (`git stash pop` to get them back).
+Restart Resolve afterwards, then run **LAB37 Check**.
+
+To see which build you are on, run LAB37 Check, or look at the first line of
+`/tmp/resolve_whisper.log`: `resolve-whisper build <sha> (<date>)`.
+
+---
+
 ## Health check
 
 Run this once after install and after any DaVinci Resolve update:
 
-**From Resolve:** Workspace > Scripts > Edit > **LAB37 Check**
+**From Resolve:** Workspace > Scripts > **LAB37 Check**
 **Or terminal:** `./.venv/bin/python caption.py --check`
 
 It validates the Python environment, ffmpeg, the VAD model, the Resolve

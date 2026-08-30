@@ -1,9 +1,15 @@
 -- Shared cross-platform launcher for the LAB37 Whisper presets.
 --
 -- Lives in the app dir (NOT Resolve's Scripts/Edit folder) so it never shows
--- up as its own menu entry. Each preset sets LAB37_TOOL + LAB37_ARGS +
--- LAB37_APP_DIR and then dofile()s this. Keeping the launch logic in one
--- place means a fix lands once, not five times.
+-- up as its own menu entry. Each preset dofile()s this and CALLS the function
+-- it returns. Keeping the launch logic in one place means a fix lands once,
+-- not five times.
+--
+-- It returns a function rather than reading LAB37_* globals because globals
+-- assigned in the calling chunk are NOT visible inside a dofile()'d chunk in
+-- Resolve's Lua sandbox -- the launcher saw nil for every one of them and
+-- every menu entry became a silent no-op. A return value crosses that
+-- boundary; a global does not.
 --
 -- caption.py finds Resolve's scripting module itself (platforminfo
 -- .bootstrap_resolve_env), so this launcher only has to run Python detached
@@ -13,67 +19,73 @@
 -- (Tk-in-process froze Resolve on Mac, and a long transcription would block
 -- the UI regardless).
 
-local TOOL = LAB37_TOOL or "Whisper"
-local ARGS = LAB37_ARGS or ""
-local app_dir = LAB37_APP_DIR
+-- Loading this prints nothing on its own. If you see the line below in the
+-- Console and nothing happens afterwards, the installed presets are older
+-- than this launcher and never called it: re-run setup (or ./update.sh).
+print("[LAB37] launcher ready")
 
-local function say(msg) print("[LAB37 " .. TOOL .. "] " .. msg) end
+return function(TOOL, ARGS, app_dir)
+    TOOL = TOOL or "Whisper"
+    ARGS = ARGS or ""
 
-if not app_dir or app_dir == "" then
-    say("ERROR: app dir not resolved (re-run setup)")
-    return
-end
+    local function say(msg) print("[LAB37 " .. TOOL .. "] " .. msg) end
 
-local is_win = package.config:sub(1, 1) == "\\"
-
-local PY, CAPTION, LOGFILE
-if is_win then
-    PY = app_dir .. "\\.venv\\Scripts\\python.exe"
-    CAPTION = app_dir .. "\\caption.py"
-    -- `start /b` redirection to a real file is unreliable for a detached
-    -- child, so discard shell output to NUL; caption.py writes the run log
-    -- itself (a Python FileHandler) on Windows, which is dependable.
-    LOGFILE = "NUL"
-else
-    PY = app_dir .. "/.venv/bin/python3"
-    CAPTION = app_dir .. "/caption.py"
-    LOGFILE = "/tmp/resolve_whisper.log"
-end
-
-say("Starting...")
-
--- Fail loudly if the venv python is missing (setup not run / folder moved);
--- the subprocess would otherwise die silently into the log.
-local pf = io.open(PY, "r")
-if pf then pf:close() else
-    say("ERROR: Python venv not found at: " .. PY)
-    say("Run setup again (the install folder may have moved).")
-    return
-end
-
-local cmd
-if is_win then
-    -- os.execute wraps this in `cmd /c "..."`, so keep it a plain command;
-    -- start /b runs it detached. Inner quotes guard spaces in the paths.
-    cmd = string.format(
-        [[start /b "" "%s" "%s" %s > "%s" 2>&1]],
-        PY, CAPTION, ARGS, LOGFILE
-    )
-else
-    -- Lua's %q escapes for LUA, not for sh: it leaves $ and ` live, so a path
-    -- containing them would be word-split or command-substituted. Single-quote
-    -- instead (nothing is special inside '...' except ' itself).
-    local function shq(s)
-        return "'" .. tostring(s):gsub("'", "'\\''") .. "'"
+    if not app_dir or app_dir == "" then
+        say("ERROR: app dir not resolved (re-run setup)")
+        return
     end
-    -- Homebrew ffmpeg lives outside Resolve's PATH; export it so mlx_whisper
-    -- and the ffprobe fallback can find it. Trailing & detaches.
-    cmd = string.format(
-        [[(export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"; ]] ..
-        [[cd %s && %s %s %s) > %s 2>&1 &]],
-        shq(app_dir), shq(PY), shq(CAPTION), ARGS, shq(LOGFILE)
-    )
-end
 
-say("Launching subprocess.")
-os.execute(cmd)
+    local is_win = package.config:sub(1, 1) == "\\"
+
+    local PY, CAPTION, LOGFILE
+    if is_win then
+        PY = app_dir .. "\\.venv\\Scripts\\python.exe"
+        CAPTION = app_dir .. "\\caption.py"
+        -- `start /b` redirection to a real file is unreliable for a detached
+        -- child, so discard shell output to NUL; caption.py writes the run log
+        -- itself (a Python FileHandler) on Windows, which is dependable.
+        LOGFILE = "NUL"
+    else
+        PY = app_dir .. "/.venv/bin/python3"
+        CAPTION = app_dir .. "/caption.py"
+        LOGFILE = "/tmp/resolve_whisper.log"
+    end
+
+    say("Starting...")
+
+    -- Fail loudly if the venv python is missing (setup not run / folder moved);
+    -- the subprocess would otherwise die silently into the log.
+    local pf = io.open(PY, "r")
+    if pf then pf:close() else
+        say("ERROR: Python venv not found at: " .. PY)
+        say("Run setup again (the install folder may have moved).")
+        return
+    end
+
+    local cmd
+    if is_win then
+        -- os.execute wraps this in `cmd /c "..."`, so keep it a plain command;
+        -- start /b runs it detached. Inner quotes guard spaces in the paths.
+        cmd = string.format(
+            [[start /b "" "%s" "%s" %s > "%s" 2>&1]],
+            PY, CAPTION, ARGS, LOGFILE
+        )
+    else
+        -- Lua's %q escapes for LUA, not for sh: it leaves $ and ` live, so a path
+        -- containing them would be word-split or command-substituted. Single-quote
+        -- instead (nothing is special inside '...' except ' itself).
+        local function shq(s)
+            return "'" .. tostring(s):gsub("'", "'\\''") .. "'"
+        end
+        -- Homebrew ffmpeg lives outside Resolve's PATH; export it so mlx_whisper
+        -- and the ffprobe fallback can find it. Trailing & detaches.
+        cmd = string.format(
+            [[(export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"; ]] ..
+            [[cd %s && %s %s %s) > %s 2>&1 &]],
+            shq(app_dir), shq(PY), shq(CAPTION), ARGS, shq(LOGFILE)
+        )
+    end
+
+    say("Launching subprocess.")
+    os.execute(cmd)
+end

@@ -124,6 +124,10 @@ foreach ($stale in @(
 )) {
     Remove-Item -Force -ErrorAction SilentlyContinue $stale
 }
+# Hand-edited preset backups (*.orig) from someone debugging a broken install:
+# a stray "LAB37 X.orig.lua" would show up as a second, stale menu entry.
+Get-ChildItem -Path $ResolveScripts -Filter "LAB37 *.orig*" -ErrorAction SilentlyContinue |
+    Remove-Item -Force -ErrorAction SilentlyContinue
 foreach ($p in @("LAB37 Reels.lua", "LAB37 Podcast.lua", "LAB37 Auto.lua", "LAB37 Custom.lua", "LAB37 Check.lua")) {
     Copy-Item -Force (Join-Path $AppDir "presets\$p") $ResolveScripts
 }
@@ -154,15 +158,19 @@ for n in sorted(names):
 & $venvPy -c $dl 2>$null
 if ($LASTEXITCODE -eq 0) { Write-Host "         Model ready." } else { Write-Host "         Model will download on first use instead." }
 
+$build = (& $venvPy (Join-Path $AppDir "version.py") 2>$null)
+if (-not $build) { $build = "unknown" }
+
 Write-Host ""
 Write-Host "  ========================================"
-Write-Host "   SETUP COMPLETE"
+Write-Host "   SETUP COMPLETE  (build $build)"
 Write-Host "  ========================================"
 Write-Host ""
 Write-Host "  How to use:"
 Write-Host "    1. Open DaVinci Resolve Studio"
 Write-Host "    2. Select a timeline, set in/out points (I and O)"
-Write-Host "    3. Workspace > Scripts > Edit > LAB37 (pick a preset):"
+Write-Host "    3. Workspace > Scripts > LAB37 (pick a preset)"
+Write-Host "       (on some Resolve versions they sit under an Edit submenu)"
 Write-Host "       - LAB37 Reels    -- single-line SRT, 1-3 words, no punctuation"
 Write-Host "       - LAB37 Podcast  -- plain SRT, full sentences"
 Write-Host "       - LAB37 Auto     -- auto-detect language, plain SRT"
