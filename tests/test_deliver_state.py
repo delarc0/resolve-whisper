@@ -73,6 +73,15 @@ class TestDeliverSettingsRestored(unittest.TestCase):
                       "restoring must not clear the user's own output path "
                       "when we never captured one")
 
+    def test_failed_probe_clears_rather_than_leaving_our_path(self):
+        body = function_body("_restore_deliver_state")
+        self.assertIn("if snapshot_failed:", body)
+        self.assertIn('"TargetDir": ""', body)
+        for fn in ("render_audio", "run_check_mode"):
+            f = function_body(fn)
+            self.assertIn("snapshot_failed", f,
+                          f"{fn} does not track a failed output-path probe")
+
     def test_check_mode_restores_too(self):
         # A health check that edits the user's project is worse than no check.
         body = function_body("run_check_mode")

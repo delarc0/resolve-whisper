@@ -150,6 +150,7 @@ def main():
     saved_custom_name = None
     _pre = _safe(project.GetRenderJobList, _default=[]) or []
     _pre_ids = {j.get("JobId") for j in _pre if isinstance(j, dict) and j.get("JobId")}
+    snapshot_failed = True
     _probe_id = _safe(project.AddRenderJob)
     if _probe_id:
         try:
@@ -157,6 +158,7 @@ def main():
                 if isinstance(j, dict) and j.get("JobId") == _probe_id:
                     saved_target_dir = j.get("TargetDir")
                     saved_custom_name = j.get("CustomName")
+                    snapshot_failed = False
                     break
         finally:
             if _probe_id not in _pre_ids:
@@ -217,7 +219,8 @@ def main():
         return 0
     finally:
         _restore_deliver_state(project, saved_fmt, saved_mode,
-                               saved_target_dir, saved_custom_name)
+                               saved_target_dir, saved_custom_name,
+                               snapshot_failed)
         _restore_page(resolve, saved_page)
 
 

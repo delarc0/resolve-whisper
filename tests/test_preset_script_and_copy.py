@@ -40,9 +40,16 @@ class TestPresetScriptRestoresDeliver(unittest.TestCase):
         self.assertIn("AddRenderJob", PRESET_SCRIPT)
 
     def test_passes_the_snapshot_to_the_restore(self):
-        self.assertIn("_restore_deliver_state(project, saved_fmt, saved_mode,\n"
-                      "                               saved_target_dir, saved_custom_name)",
+        self.assertIn("saved_target_dir, saved_custom_name,\n"
+                      "                               snapshot_failed)",
                       PRESET_SCRIPT)
+
+    def test_a_failed_probe_does_not_leave_our_path_behind(self):
+        # If AddRenderJob returns no id we never learn the old TargetDir, but
+        # _validate() still overwrites it. Leaving ours there would redirect
+        # the user's next export.
+        self.assertIn("snapshot_failed = True", PRESET_SCRIPT)
+        self.assertIn("snapshot_failed = False", PRESET_SCRIPT)
 
     def test_restores_the_page_too(self):
         self.assertIn("_restore_page(resolve, saved_page)", PRESET_SCRIPT)
