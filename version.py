@@ -9,8 +9,10 @@ Source of truth is the git checkout (that is how the tool is installed).
 A ZIP download has no .git, so that case is reported honestly as unknown
 rather than guessed at.
 """
+import json
 import os
 import subprocess
+import time
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -87,6 +89,47 @@ def behind_by(fetch: bool = False) -> int:
     if count is None or not count.isdigit():
         return -1
     return int(count)
+
+
+def update_available(max_age_h: float = 24.0) -> int:
+    """Commits behind origin, answered from a cache at most max_age_h old.
+
+    Called on every caption run, so it must not cost a network round trip
+    every time and must never delay or break a run: any failure answers 0.
+    The cache lives outside the checkout (see platforminfo.cache_dir) so it
+    cannot make the build look locally modified.
+    """
+    try:
+        import platforminfo
+        cache = platforminfo.cache_dir()
+        path = os.path.join(cache, "update_check.json") if cache else ""
+        now = time.time()
+
+        if path and os.path.exists(path):
+            try:
+                with open(path, encoding="utf-8") as f:
+                    data = json.load(f)
+                if (now - float(data.get("checked", 0))) < max_age_h * 3600:
+                    return max(int(data.get("behind", 0)), 0)
+            except (OSError, ValueError, TypeError):
+                pass  # unreadable cache just means we re-check
+
+        behind = behind_by(fetch=True)
+        behind = behind if behind > 0 else 0
+        if path:
+            tmp = f"{path}.{os.getpid()}.tmp"
+            try:
+                with open(tmp, "w", encoding="utf-8") as f:
+                    json.dump({"checked": now, "behind": behind}, f)
+                os.replace(tmp, path)
+            except OSError:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+        return behind
+    except Exception:
+        return 0  # an update check must never be able to break a caption run
 
 
 if __name__ == "__main__":

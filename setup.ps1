@@ -128,7 +128,7 @@ foreach ($stale in @(
 # a stray "LAB37 X.orig.lua" would show up as a second, stale menu entry.
 Get-ChildItem -Path $ResolveScripts -Filter "LAB37 *.orig*" -ErrorAction SilentlyContinue |
     Remove-Item -Force -ErrorAction SilentlyContinue
-foreach ($p in @("LAB37 Reels.lua", "LAB37 Podcast.lua", "LAB37 Auto.lua", "LAB37 Custom.lua", "LAB37 Check.lua")) {
+foreach ($p in @("LAB37 Reels.lua", "LAB37 Podcast.lua", "LAB37 Auto.lua", "LAB37 Custom.lua", "LAB37 Check.lua", "LAB37 Update.lua")) {
     Copy-Item -Force (Join-Path $AppDir "presets\$p") $ResolveScripts
 }
 # Pointer file: presets read this to find the install dir (and the shared
@@ -176,6 +176,7 @@ Write-Host "       - LAB37 Podcast  -- plain SRT, full sentences"
 Write-Host "       - LAB37 Auto     -- auto-detect language, plain SRT"
 Write-Host "       - LAB37 Custom   -- settings dialog (language, style, line length)"
 Write-Host "       - LAB37 Check    -- pre-flight check (run after install/Resolve update)"
+Write-Host "       - LAB37 Update   -- get the latest version (one click)"
 Write-Host "    4. Captions are placed on a subtitle track automatically"
 Write-Host "    5. If auto-place was skipped, the SRT is in the Media Pool:"
 Write-Host "       right-click it > Insert Selected Subtitles to Timeline"

@@ -135,8 +135,16 @@ class ProgressUI:
         self.bar.indeterminate()
         self._mode = "indeterminate"
 
+        # Update notice: created empty and only packed once there is
+        # something to say, so it costs no vertical space on a normal run.
+        self.notice_label = tk.Label(
+            frame, text="", font=(th.FONT_UI, 10), fg=th.MUTED, bg=th.BG,
+            wraplength=384, justify="left")
+        self._notice_shown = False
+
         button_row = tk.Frame(frame, bg=th.BG)
         button_row.pack(fill="x", pady=(16, 0))
+        self._button_row = button_row
         self.cancel_button = th.make_button(
             button_row, "Cancel", "secondary", self._on_cancel)
         self.cancel_button.pack(side="right")
@@ -245,6 +253,17 @@ class ProgressUI:
         title = _STAGE_TITLES.get(stage, stage.replace("_", " ").title() or "Working...")
         self.title_label.config(text=title)
         self.detail_label.config(text=message)
+
+        notice = status.get("notice", "")
+        if notice and not self._notice_shown and isinstance(notice, str):
+            self.notice_label.config(text=notice)
+            # `before` keeps it above the buttons: packing order, not call
+            # order, decides where it lands.
+            self.notice_label.pack(anchor="w", pady=(12, 0),
+                                   before=self._button_row)
+            self._notice_shown = True
+            self.root.update_idletasks()
+            self.root.minsize(440, self.root.winfo_reqheight())
 
         if stage == "done":
             self.title_label.config(fg=th.SUCCESS)

@@ -273,6 +273,40 @@ def _start_heartbeat(stage: str, message: str):
     return stop, th
 
 
+# Set by a background thread if this install is behind origin. Surfaced in
+# the progress window, which is the one screen every user actually looks at:
+# the same warning in the check log is invisible to anyone who runs the tool
+# from Resolve's menu and never opens a log.
+_UPDATE_NOTICE = ""
+
+
+def _start_update_check():
+    """Ask (at most once a day, off the hot path) whether an update exists.
+
+    A daemon thread so it cannot delay or outlive the run, and every failure
+    inside is swallowed: learning about an update is never worth risking a
+    caption job.
+    """
+    def _probe():
+        global _UPDATE_NOTICE
+        try:
+            import version
+            behind = version.update_available()
+            if behind > 0:
+                plural = "s" if behind > 1 else ""
+                _UPDATE_NOTICE = (
+                    f"Update available ({behind} version{plural} behind) - "
+                    "Workspace > Scripts > LAB37 Update")
+        except Exception:
+            pass
+
+    try:
+        import threading
+        threading.Thread(target=_probe, daemon=True).start()
+    except Exception as e:
+        log.debug(f"update check not started: {e}")
+
+
 def _write_status(stage: str, message: str = "", progress: int = -1):
     """Write current pipeline state for the progress UI to read.
 
@@ -292,6 +326,7 @@ def _write_status(stage: str, message: str = "", progress: int = -1):
                 "message": message,
                 "ts": time.time(),
                 "pid": os.getpid(),
+                "notice": _UPDATE_NOTICE,
             }, f)
         os.replace(tmp_path, STATUS_FILE)
     except Exception as e:
@@ -978,6 +1013,7 @@ def run_resolve_mode(args):
 
     ui_proc = None if getattr(args, "no_ui", False) else _spawn_progress_ui()
     _install_cancel_signal()
+    _start_update_check()
     tmp_dir = None
     resolve = None
     saved_page = None

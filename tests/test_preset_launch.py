@@ -19,7 +19,20 @@ FUSCRIPT = ("/Applications/DaVinci Resolve/DaVinci Resolve.app/Contents/"
             "Libraries/Fusion/fuscript")
 
 
+# "LAB37 Update" deliberately does NOT use the shared launcher: that launcher
+# runs caption.py detached and silent, which is right for a caption job and
+# wrong for an update the user needs to watch. It has its own contract below.
+UPDATE_PRESET = "LAB37 Update.lua"
+
+
 def preset_files():
+    """The caption presets, which all share preset_launch.lua."""
+    return [os.path.join(PRESET_DIR, f)
+            for f in sorted(os.listdir(PRESET_DIR))
+            if f.endswith(".lua") and f != UPDATE_PRESET]
+
+
+def all_preset_files():
     return [os.path.join(PRESET_DIR, f)
             for f in sorted(os.listdir(PRESET_DIR)) if f.endswith(".lua")]
 
@@ -67,13 +80,63 @@ class TestLauncherContract(unittest.TestCase):
                           f"{os.path.basename(path)}: no stale-launcher guard")
 
     def test_presets_do_not_assign_lab37_globals(self):
-        for path in preset_files():
+        for path in all_preset_files():
             src = open(path, encoding="utf-8").read()
             # re.M matters: without it "^" only matches the start of the
             # whole file, so this assertion could never fail.
             self.assertIsNone(
                 re.search(r"^\s*LAB37_\w+\s*=", src, re.M),
                 f"{os.path.basename(path)}: sets a global that cannot cross")
+
+
+class TestUpdatePreset(unittest.TestCase):
+    """The one-click updater. It must not reuse the caption launcher, and it
+    must not run the update inside Resolve's process: reinstalling
+    dependencies there would freeze the UI for the length of a pip install."""
+
+    def setUp(self):
+        path = os.path.join(PRESET_DIR, UPDATE_PRESET)
+        self.assertTrue(os.path.exists(path), "the Update preset is missing")
+        self.src = open(path, encoding="utf-8").read()
+
+    def test_does_not_use_the_caption_launcher(self):
+        # It may mention preset_launch.lua in a comment explaining why it
+        # doesn't use it; what matters is that it never loads it.
+        self.assertNotIn("dofile(", self.src,
+                         "must not hand off to the caption launcher")
+
+    def test_finds_the_install_dir_from_the_pointer_file(self):
+        self.assertIn("resolve_whisper_path.txt", self.src)
+
+    def test_runs_the_update_in_a_visible_terminal(self):
+        # Both platforms, and both detached from Resolve.
+        self.assertIn("open -a Terminal", self.src, "no Mac terminal launch")
+        self.assertIn("powershell", self.src, "no Windows terminal launch")
+
+    def test_picks_the_right_script_per_platform(self):
+        self.assertIn("update.ps1", self.src)
+        self.assertIn("update.sh", self.src)
+
+    def test_reports_a_missing_update_script(self):
+        # Installs predating update.sh would otherwise click into silence.
+        self.assertIn("update script not found", self.src)
+
+    def test_is_installed_by_both_setup_scripts(self):
+        for setup in ("setup.sh", "setup.ps1"):
+            src = open(os.path.join(APP_DIR, setup), encoding="utf-8").read()
+            self.assertIn(UPDATE_PRESET, src,
+                          f"{setup} does not install the Update preset")
+
+
+class TestUpdateIsRefusedWhileBusy(unittest.TestCase):
+    """Updating rewrites the presets and reinstalls dependencies, so it must
+    not happen underneath a running caption job."""
+
+    def test_update_script_tests_the_run_lock(self):
+        src = open(os.path.join(APP_DIR, "update.sh"), encoding="utf-8").read()
+        self.assertIn("resolve_whisper.lock", src)
+        self.assertIn("LOCK_EX | fcntl.LOCK_NB", src)
+        self.assertIn("A caption job is running right now.", src)
 
 
 @unittest.skipUnless(os.path.exists(FUSCRIPT), "Resolve's fuscript not installed")

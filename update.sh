@@ -31,6 +31,29 @@ if ! command -v git &>/dev/null; then
     exit 1
 fi
 
+# Refuse to update underneath a running caption job: setup rewrites the
+# menu presets and reinstalls dependencies, and the job is holding a kernel
+# lock we can test for by trying to take it ourselves.
+if [ -x "$APP_DIR/.venv/bin/python3" ]; then
+    if ! "$APP_DIR/.venv/bin/python3" - <<'PYLOCK'
+import fcntl, os, sys, tempfile
+lock = os.path.join(tempfile.gettempdir(), "resolve_whisper.lock")
+try:
+    fd = os.open(lock, os.O_CREAT | os.O_RDWR, 0o644)
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+except OSError:
+    sys.exit(1)          # someone is captioning right now
+except Exception:
+    sys.exit(0)          # can't tell -> don't block the user
+sys.exit(0)
+PYLOCK
+    then
+        echo "  A caption job is running right now."
+        echo "  Let it finish (or cancel it), then run this again."
+        exit 1
+    fi
+fi
+
 BEFORE="$(git log -1 --format='%h (%cs)' 2>/dev/null || echo unknown)"
 echo "  Current build: $BEFORE"
 

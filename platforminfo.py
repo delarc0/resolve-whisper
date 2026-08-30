@@ -78,6 +78,26 @@ def log_dir() -> str:
     return "/tmp"
 
 
+def cache_dir() -> str:
+    """Writable scratch that survives reboots, for things like the update check.
+
+    Deliberately NOT inside the app dir: that is a git checkout, and a state
+    file written there would show up in `git status --porcelain`, which is
+    how version.py decides whether the build is modified. The tool would
+    report every install as carrying local changes.
+    """
+    if IS_WIN:
+        base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+        path = os.path.join(base, "lab37-whisper")
+    else:
+        path = os.path.expanduser("~/.cache/lab37-whisper")
+    try:
+        os.makedirs(path, exist_ok=True)
+    except OSError:
+        return ""
+    return path
+
+
 def add_cuda_dll_dir():
     """Make CTranslate2 (the faster-whisper GPU backend) find cuBLAS/cuDNN.
 
