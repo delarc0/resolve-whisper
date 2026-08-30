@@ -20,6 +20,69 @@ password.
   message Erik at **hello@lab37.io** with a screenshot. Don't leave the
   machine in a half-configured state without explaining what happened.
 
+## Already installed? Update instead
+
+If the tool is already installed and the user just needs the latest version,
+do THIS section and stop. Do not re-run the whole install.
+
+Run every command yourself. The user does nothing except restart Resolve.
+
+**1. Find the install folder.** Don't ask the user where it is; the pointer
+file next to the presets holds the path:
+
+```bash
+# Mac
+cat "$HOME/Library/Application Support/Blackmagic Design/DaVinci Resolve/Fusion/Scripts/Edit/resolve_whisper_path.txt"
+```
+```powershell
+# Windows
+Get-Content "$env:APPDATA\Blackmagic Design\DaVinci Resolve\Support\Fusion\Scripts\Edit\resolve_whisper_path.txt"
+```
+
+**2. Update.** If `update.sh` / `update.ps1` exists in that folder, run it and
+skip to step 3 - it does everything:
+
+```bash
+cd "<install folder>" && ./update.sh          # Mac
+```
+```powershell
+cd "<install folder>"; .\update.ps1           # Windows
+```
+
+If those files do NOT exist, the install predates them. Do it by hand:
+
+```bash
+cd "<install folder>"
+git stash --include-untracked   # keeps any local edits; harmless if none
+git pull
+./setup.sh                      # .\setup.ps1 on Windows
+```
+
+`git stash` matters: a user who hand-patched a file to work around a bug will
+otherwise hit "local changes would be overwritten" and think the update is
+broken. Nothing is lost - `git stash pop` restores it.
+
+**Never stop after `git pull`.** The menu entries are COPIES inside Resolve's
+Scripts folder, so pulling updates the engine and leaves the buttons stale.
+Setup is what re-copies them. Pull without setup is how you get a preset and
+launcher that disagree, which shows up as a menu entry that does nothing.
+
+**3. Ask the user to fully quit and reopen DaVinci Resolve.** Resolve reads
+the Scripts folder at launch.
+
+**4. Verify.** Have them click **Workspace > Scripts > LAB37 Check**, then
+read the log yourself (path in Phase 4). Every row must say PASS, and the
+top line tells you which build they are now on:
+
+```
+resolve-whisper build <sha> (<date>)
+```
+
+Tell the user that build id in your summary. If a bug report follows, it is
+the first thing Erik needs.
+
+---
+
 ## Pick the platform first
 
 Detect the OS and follow the matching install track, then both platforms
