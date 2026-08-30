@@ -197,6 +197,13 @@ cat /tmp/resolve_whisper_check.log
 Get-Content "$env:TEMP\resolve_whisper_check.log"
 ```
 
+Also look for a line like `2 update(s) behind origin`. The check reports
+this but never acts on it: updating swaps out the menu presets and the
+Python dependencies and needs Resolve restarted, which must not happen
+underneath someone mid-edit. If you see it, tell the user they are behind,
+and offer to run the update section at the top of this file. Don't update
+without asking.
+
 Every row must say **PASS**. Common failures:
 - `Connect to Resolve - FAIL` → Resolve not running, external scripting not
   set to Local, or the free (non-Studio) version → check Preferences again;
