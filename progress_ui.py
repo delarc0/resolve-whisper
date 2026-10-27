@@ -16,7 +16,6 @@ import os
 import signal
 import sys
 import time
-import tempfile
 
 try:
     import tkinter as tk
@@ -42,6 +41,30 @@ _STAGE_TITLES = {
     "done": "Done",
     "error": "Error",
 }
+
+
+def _win_process_alive(pid: int) -> bool:
+    """Windows liveness without os.kill, which TERMINATES the target there.
+
+    Opening the process for SYNCHRONIZE alone and waiting zero milliseconds
+    answers the question without touching it: a signalled handle means the
+    process has exited. Anything we cannot determine counts as alive, so an
+    odd permission error never closes a window over a live run.
+    """
+    import ctypes
+    SYNCHRONIZE = 0x00100000
+    WAIT_OBJECT_0 = 0x00000000
+    ERROR_INVALID_PARAMETER = 87
+    kernel32 = ctypes.windll.kernel32
+    handle = kernel32.OpenProcess(SYNCHRONIZE, False, pid)
+    if not handle:
+        # 87 is "no such process"; every other error is us not being
+        # allowed to look, which is not evidence that it died.
+        return kernel32.GetLastError() != ERROR_INVALID_PARAMETER
+    try:
+        return kernel32.WaitForSingleObject(handle, 0) != WAIT_OBJECT_0
+    finally:
+        kernel32.CloseHandle(handle)
 
 
 class _Bar:
@@ -225,8 +248,7 @@ class ProgressUI:
         except (TypeError, ValueError):
             return True
         if sys.platform == "win32":
-            # os.kill(pid, 0) TERMINATES on Windows; never probe that way.
-            return True
+            return _win_process_alive(pid)
         try:
             os.kill(pid, 0)
             return True

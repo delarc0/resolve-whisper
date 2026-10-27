@@ -12,6 +12,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import caption
+import platforminfo
 from caption import (  # noqa: E402
     _acquire_run_lock,
     _release_run_lock,
@@ -94,12 +95,12 @@ class TestCleanupOwnFilesOnly(unittest.TestCase):
             os.utime(foreign_old, (old, old))
 
             # Cleanup only ever runs in the tool's OWN output folder.
-            orig = caption._default_output_dir
-            caption._default_output_dir = lambda: d
+            orig = platforminfo.default_output_dir
+            platforminfo.default_output_dir = lambda: d
             try:
                 _cleanup_old_srts(d, keep_days=30)
             finally:
-                caption._default_output_dir = orig
+                platforminfo.default_output_dir = orig
 
             self.assertFalse(os.path.exists(own_old), "own stale file should go")
             self.assertTrue(os.path.exists(foreign_old), "foreign SRT must survive")
@@ -208,6 +209,10 @@ class TestRunLock(unittest.TestCase):
         finally:
             if holder.poll() is None:
                 holder.kill()
+            # Popen leaves the stdout pipe open after a kill(); closing it
+            # keeps the suite's output free of ResourceWarnings.
+            holder.stdout.close()
+            holder.wait(timeout=10)
 
     def test_leftover_file_with_dead_pid_is_not_a_lock(self):
         # A file left by a crashed run holds no kernel lock, so the next run

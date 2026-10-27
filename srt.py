@@ -2,7 +2,6 @@
 SRT subtitle file generation from word-level timestamps.
 Groups words into readable caption blocks with proper timing.
 """
-import json
 import logging
 from config import cfg
 
@@ -704,33 +703,4 @@ def write_srt(segments: list, output_path: str, fps: float = 24.0,
     # would also match caption text that happens to be a bare number.
     count = sum(1 for block in content.strip().split("\n\n") if block.strip())
     log.info(f"Wrote {count} captions to {output_path}")
-    return True
-
-
-def write_captions_json(segments: list, output_path: str, fps: float = 24.0,
-                        strip_punctuation: bool = False, offset_s: float = 0.0):
-    """Generate structured caption data and write to JSON file."""
-    captions = words_to_captions(segments, fps, offset_s=offset_s)
-    if not captions:
-        log.warning("No captions generated - empty transcription.")
-        return False
-
-    if cfg.get("uppercase", False):
-        for cap in captions:
-            cap["text"] = cap["text"].upper()
-    if strip_punctuation:
-        for cap in captions:
-            cap["text"] = strip_punct_text(cap["text"])
-
-    # Same rule as the SRT writer: a caption that transforms to empty text
-    # is not a caption.
-    captions = [c for c in captions if c["text"].strip()]
-    if not captions:
-        log.warning("No captions left after text transforms.")
-        return False
-
-    with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(captions, f, ensure_ascii=False)
-
-    log.info(f"Wrote {len(captions)} captions to {output_path}")
     return True

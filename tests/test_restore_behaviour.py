@@ -15,7 +15,7 @@ import unittest
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, APP_DIR)
 
-import caption  # noqa: E402
+import resolve_api  # noqa: E402
 
 
 class FakeProject:
@@ -46,7 +46,7 @@ class FakeProject:
 class TestRestoreDeliverState(unittest.TestCase):
     def test_exact_snapshot_is_put_back(self):
         p = FakeProject()
-        caption._restore_deliver_state(
+        resolve_api._restore_deliver_state(
             p, {"format": "mp4", "codec": "H264"}, "single",
             saved_target_dir="/Volumes/Media/EXPORT",
             saved_custom_name="reel_01")
@@ -59,7 +59,7 @@ class TestRestoreDeliverState(unittest.TestCase):
     def test_changed_but_unreadable_is_cleared(self):
         # Leaving the tool's own path would silently redirect the next export.
         p = FakeProject()
-        caption._restore_deliver_state(p, {}, None, clear_unknown_output=True)
+        resolve_api._restore_deliver_state(p, {}, None, clear_unknown_output=True)
         self.assertEqual(p.output_writes(),
                          [{"TargetDir": "", "CustomName": ""}])
 
@@ -68,13 +68,13 @@ class TestRestoreDeliverState(unittest.TestCase):
         # before anything wrote TargetDir. Clearing here would destroy a
         # setting this run never touched.
         p = FakeProject()
-        caption._restore_deliver_state(p, {}, None, clear_unknown_output=False)
+        resolve_api._restore_deliver_state(p, {}, None, clear_unknown_output=False)
         self.assertEqual(p.output_writes(), [],
                          "cleared settings the run never modified")
 
     def test_partial_snapshot_still_restores(self):
         p = FakeProject()
-        caption._restore_deliver_state(p, {}, None,
+        resolve_api._restore_deliver_state(p, {}, None,
                                        saved_target_dir="/tmp/x",
                                        saved_custom_name=None)
         self.assertEqual(p.output_writes(),
@@ -83,7 +83,7 @@ class TestRestoreDeliverState(unittest.TestCase):
     def test_incomplete_format_snapshot_is_not_applied(self):
         # A half-read format would set a codec that doesn't match the format.
         p = FakeProject()
-        caption._restore_deliver_state(p, {"format": "mp4", "codec": ""}, None)
+        resolve_api._restore_deliver_state(p, {"format": "mp4", "codec": ""}, None)
         self.assertIsNone(p.fmt)
 
 

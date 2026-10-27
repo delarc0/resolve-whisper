@@ -45,8 +45,7 @@ class TestAacFallback(unittest.TestCase):
 
     def test_duration_via_ffprobe(self):
         # soundfile throws on AAC; ffprobe fallback must return ~2s, not 0.0
-        dur = Transcriber.get_audio_duration(
-            Transcriber.__new__(Transcriber), self.aac_path)
+        dur = Transcriber.get_audio_duration(self.aac_path)
         self.assertGreater(dur, 1.5)
         self.assertLess(dur, 3.0)
 

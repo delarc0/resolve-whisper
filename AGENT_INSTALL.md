@@ -80,7 +80,7 @@ resolve-whisper build <sha> (<date>)
 ```
 
 Tell the user that build id in your summary. If a bug report follows, it is
-the first thing Erik needs.
+the first thing the maintainer needs.
 
 ---
 
@@ -209,7 +209,7 @@ Every row must say **PASS**. Common failures:
 - `Connect to Resolve - FAIL` → Resolve not running, external scripting not
   set to Local, or the free (non-Studio) version → check Preferences again;
   if scripting is Local and it still fails, it's probably the free version:
-  the user needs a Studio license from Erik.
+  the scripting API is Studio only, so they need a Studio license.
 - `mlx_whisper importable - FAIL` (Mac) / `faster_whisper importable - FAIL`
   (Windows) → re-run setup (`./setup.sh` on Mac, `.\setup.ps1` on Windows)
   and read its output.

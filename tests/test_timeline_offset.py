@@ -11,7 +11,7 @@ from dataclasses import dataclass
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import caption  # noqa: E402
+import resolve_api  # noqa: E402
 from srt import words_to_captions, words_to_srt  # noqa: E402
 
 
@@ -53,27 +53,27 @@ class FakeTimeline:
 
 
 class TestRenderOffset(unittest.TestCase):
-    """caption._render_offset_s converts MarkIn into a seconds offset."""
+    """resolve_api._render_offset_s converts MarkIn into a seconds offset."""
 
     def test_markin_from_job_settings(self):
         # Timeline starts at 01:00:00:00 (86400 @ 24fps); in-point 10s later.
         tl = FakeTimeline(start_frame=86400)
-        off = caption._render_offset_s({"MarkIn": 86400 + 240}, tl, 24.0)
+        off = resolve_api._render_offset_s({"MarkIn": 86400 + 240}, tl, 24.0)
         self.assertAlmostEqual(off, 10.0, places=6)
 
     def test_no_markin_no_marks_is_zero(self):
         tl = FakeTimeline(start_frame=86400)
-        self.assertEqual(caption._render_offset_s({}, tl, 24.0), 0.0)
+        self.assertEqual(resolve_api._render_offset_s({}, tl, 24.0), 0.0)
 
     def test_markin_equal_start_is_zero(self):
         # Whole-timeline render: MarkIn == timeline start -> no shift.
         tl = FakeTimeline(start_frame=86400)
-        self.assertEqual(caption._render_offset_s({"MarkIn": 86400}, tl, 24.0), 0.0)
+        self.assertEqual(resolve_api._render_offset_s({"MarkIn": 86400}, tl, 24.0), 0.0)
 
     def test_negative_offset_clamped_to_zero(self):
         # Defensive: a MarkIn in a different frame base must not shift back.
         tl = FakeTimeline(start_frame=86400)
-        self.assertEqual(caption._render_offset_s({"MarkIn": 0}, tl, 24.0), 0.0)
+        self.assertEqual(resolve_api._render_offset_s({"MarkIn": 0}, tl, 24.0), 0.0)
 
     def test_live_timeline_marks_are_NOT_used(self):
         # GetMarkInOut reports the LIVE marks (the user can change them
@@ -82,7 +82,7 @@ class TestRenderOffset(unittest.TestCase):
         # correct, so a job without MarkIn must yield no shift.
         tl = FakeTimeline(start_frame=0,
                           marks={"video": {"in": 250, "out": 500}})
-        self.assertEqual(caption._render_offset_s({}, tl, 25.0), 0.0)
+        self.assertEqual(resolve_api._render_offset_s({}, tl, 25.0), 0.0)
 
     def test_select_all_frames_wins_over_markin(self):
         # Resolve: "when SelectAllFrames is True the settings MarkIn and
@@ -90,25 +90,25 @@ class TestRenderOffset(unittest.TestCase):
         # shifting would corrupt captions that were already correct.
         tl = FakeTimeline(start_frame=86400)
         job = {"SelectAllFrames": True, "MarkIn": 86400 + 24 * 300}
-        self.assertEqual(caption._render_offset_s(job, tl, 24.0), 0.0)
+        self.assertEqual(resolve_api._render_offset_s(job, tl, 24.0), 0.0)
 
     def test_markin_still_applies_when_select_all_frames_false(self):
         tl = FakeTimeline(start_frame=86400)
         job = {"SelectAllFrames": False, "MarkIn": 86400 + 240}
-        self.assertAlmostEqual(caption._render_offset_s(job, tl, 24.0), 10.0,
+        self.assertAlmostEqual(resolve_api._render_offset_s(job, tl, 24.0), 10.0,
                                places=6)
 
     def test_zero_fps_is_safe(self):
         tl = FakeTimeline(start_frame=0)
-        self.assertEqual(caption._render_offset_s({"MarkIn": 240}, tl, 0.0), 0.0)
+        self.assertEqual(resolve_api._render_offset_s({"MarkIn": 240}, tl, 0.0), 0.0)
 
     def test_bad_types_are_safe(self):
         tl = FakeTimeline(start_frame=86400)
-        self.assertEqual(caption._render_offset_s({"MarkIn": "abc"}, tl, 24.0), 0.0)
+        self.assertEqual(resolve_api._render_offset_s({"MarkIn": "abc"}, tl, 24.0), 0.0)
 
     def test_lowercase_markin_key(self):
         tl = FakeTimeline(start_frame=0)
-        off = caption._render_offset_s({"markIn": 48}, tl, 24.0)
+        off = resolve_api._render_offset_s({"markIn": 48}, tl, 24.0)
         self.assertAlmostEqual(off, 2.0, places=6)
 
 

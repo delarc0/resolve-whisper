@@ -1,4 +1,4 @@
-"""Tests for caption.py pure helpers (no Resolve required).
+"""Tests for the Resolve-facing pure helpers (no Resolve required).
 
 Run from project root:  ./.venv/bin/python -m unittest tests/test_caption_helpers.py
 """
@@ -9,9 +9,9 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# caption.py imports DaVinciResolveScript lazily inside get_resolve(), so the
-# top-level import is safe outside Resolve.
-from caption import (  # noqa: E402
+# resolve_api imports DaVinciResolveScript lazily inside get_resolve(), so
+# the top-level import is safe outside Resolve.
+from resolve_api import (  # noqa: E402
     _validate_audio_only_settings,
     _expected_output_path,
     _start_rendering_compat,

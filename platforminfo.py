@@ -162,3 +162,38 @@ def find_tool(name: str):
         if os.path.exists(candidate):
             return candidate
     return None
+
+
+def default_output_dir() -> str:
+    """Where SRTs land when nothing else is configured."""
+    return os.path.join(os.path.expanduser("~"), "Desktop", "Captions")
+
+
+def audio_duration_s(path: str) -> float:
+    """Duration of an audio file in seconds, or 0.0 if it can't be read.
+
+    soundfile first (a cheap header read), ffprobe as the fallback for
+    codecs libsndfile can't open - notably the AAC/.mp4 that Resolve 21's
+    factory "Audio Only" preset renders. A 0.0 collapses the progress
+    estimate and the render-offset cross-check, so fight for a real answer.
+    """
+    try:
+        import soundfile as sf
+        info = sf.info(path)
+        if info.samplerate:
+            return max(info.frames / float(info.samplerate), 0.0)
+    except Exception:
+        pass
+    try:
+        import subprocess
+        ffprobe = find_tool("ffprobe")
+        if not ffprobe:
+            return 0.0
+        proc = subprocess.run(
+            [ffprobe, "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", path],
+            capture_output=True, text=True, timeout=60,
+        )
+        return max(float(proc.stdout.strip()), 0.0)
+    except Exception:
+        return 0.0

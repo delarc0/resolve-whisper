@@ -6,6 +6,11 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Read-only: this workflow only checks out code and runs tests. Nothing here
+# needs to write to the repo, so don't hand it a token that can.
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ${{ matrix.os }}
@@ -30,5 +35,29 @@ jobs:
       - name: Install test dependencies
         run: python -m pip install --quiet numpy soundfile
 
+      # -W error::ResourceWarning turns a leaked file handle or subprocess
+      # pipe into a failure. Those leaks are invisible in a passing run and
+      # are exactly what exhausts handles on a long Windows session.
       - name: Run tests
-        run: python -m unittest discover -s tests -v
+        run: python -W error::ResourceWarning -m unittest discover -s tests -v
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # The F rules only (pyflakes: undefined names, unused imports,
+      # shadowed definitions). No style opinions, because a reformatting bot
+      # editing this codebase would bury the comments that explain the
+      # Resolve workarounds. flake8 rather than pyflakes directly because it
+      # honours the `# noqa: F401` markers on the deliberate import probes
+      # in check.py, which exist to answer "is this backend installed?".
+      - name: Install flake8
+        run: python -m pip install --quiet flake8
+
+      - name: Check for undefined names and dead imports
+        run: python -m flake8 --select=F *.py tests/*.py

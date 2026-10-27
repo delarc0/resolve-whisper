@@ -29,10 +29,23 @@ assisting non-technical users. Human-facing instructions live in README.md.
 - `platforminfo.py` - single OS boundary: flags, Resolve scripts/API/lib
   paths, ffmpeg/ffprobe finder, and `bootstrap_resolve_env()` which sets
   RESOLVE_SCRIPT_* and adds the Modules dir to sys.path
-- `caption.py` - the pipeline: render timeline audio ("Audio Only" preset) →
-  transcribe → SRT → auto-import to Media Pool. Also `--check` (pre-flight
-  health check), `--file` (standalone, no Resolve), and `--dialog` (Custom
-  preset settings window) modes
+- `caption.py` - the pipeline and its plumbing: the run lock, the status
+  file, the progress-window subprocess, and the two run modes
+  (`run_resolve_mode`: render timeline audio → transcribe → SRT →
+  auto-import to Media Pool; `run_file_mode`: `--file`, standalone, no
+  Resolve). They share `_apply_cli_overrides`, `_transcribe_to_srt` and
+  `_ensure_terminal_status`, so the preset flags, the Whisper failure paths
+  and the progress window behave identically in both. `--dialog` spawns the
+  Custom settings window
+- `resolve_api.py` - everything that talks to Resolve, kept apart so the
+  Resolve-shaped code (the 18-to-21 compat shims, the borrowed Deliver page
+  and its restore paths) can be read on its own. Owns no UI: `render_audio`
+  takes an `on_status` callback and the caller decides what that means, so
+  nothing in here touches the status file
+- `check.py` - the pre-flight health check (`caption.py --check`). Reports
+  every step PASS or FAIL with the remedy, writes its own log for install
+  agents to read, and creates the "Audio Only" preset if it is missing. It
+  borrows the Deliver page under the same restore rules as the render path
 - `transcribe.py` - Whisper wrapper. Backend splits at ONE branch: mlx +
   silero-vad pre-pass (Mac) vs faster-whisper with its built-in VAD
   (Windows/other). The silero pre-pass and its ffmpeg/AAC decode fallback
@@ -115,9 +128,15 @@ site explain why. Summary so they aren't "simplified" away:
 
 ## Development
 
-- Tests: `./.venv/bin/python -m unittest discover -s tests` - pure logic,
-  no Resolve required. Run after any change. A few tests additionally drive
-  Resolve's own `fuscript` when it is installed, and skip when it isn't.
+- Tests: `./.venv/bin/python -W error::ResourceWarning -m unittest discover
+  -s tests` - pure logic, no Resolve required. Run after any change. The
+  `-W` flag is what CI runs: a leaked handle or subprocess pipe is invisible
+  in a passing run and is what exhausts handles on a long session. A few
+  tests additionally drive Resolve's own `fuscript` when it is installed,
+  and skip when it isn't.
+- Lint: `uvx flake8 --select=F *.py tests/*.py` - F rules only (undefined
+  names, dead imports). Same gate as CI. No formatter, deliberately: the
+  workarounds in here only make sense next to the comments explaining them.
 - Updating an install is `./update.sh` / `.\update.ps1` (pull + setup).
   Never tell a user to `git pull` alone: the presets are copies inside
   Resolve's Scripts folder and would stay stale.

@@ -8,24 +8,30 @@ Resolve API that isn't importable without Resolve running; the live check is
 `caption.py --check`.
 """
 import os
+from pathlib import Path
 import re
 import unittest
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SRC = open(os.path.join(APP_DIR, "caption.py"), encoding="utf-8").read()
+MODULES = ("resolve_api.py", "check.py", "caption.py")
+SOURCES = {name: Path(os.path.join(APP_DIR, name)).read_text(encoding="utf-8")
+           for name in MODULES}
 
 
 def function_body(name):
-    lines = SRC.split("\n")
-    start = next((i for i, l in enumerate(lines)
-                  if l.startswith(f"def {name}(")), None)
-    if start is None:
-        raise AssertionError(
-            f"caption.py no longer defines {name}(); this test guards its "
-            "behaviour, so a rename has to be noticed, not swallowed")
-    end = next((i for i, l in enumerate(lines[start + 1:], start + 1)
-                if l and not l[0].isspace()), len(lines))
-    return "\n".join(lines[start:end])
+    """Source of a top-level function, from whichever module defines it."""
+    for src in SOURCES.values():
+        lines = src.split("\n")
+        start = next((i for i, l in enumerate(lines)
+                      if l.startswith(f"def {name}(")), None)
+        if start is None:
+            continue
+        end = next((i for i, l in enumerate(lines[start + 1:], start + 1)
+                    if l and not l[0].isspace()), len(lines))
+        return "\n".join(lines[start:end])
+    raise AssertionError(
+        f"no module defines {name}(); this test guards its behaviour, so a "
+        "rename has to be noticed, not swallowed")
 
 
 class TestRenderQueueHygiene(unittest.TestCase):

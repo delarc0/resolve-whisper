@@ -3,7 +3,6 @@ Whisper transcription engine with word-level timestamps.
 Adapted from a real-time dictation transcriber for file-based captioning.
 """
 import logging
-import os
 import re
 from dataclasses import dataclass
 
@@ -11,6 +10,15 @@ from config import cfg
 import config as _config
 
 log = logging.getLogger(__name__)
+
+
+class TranscriptionError(RuntimeError):
+    """Whisper itself failed: no model, no GPU memory, undecodable audio.
+
+    Distinct from "the model ran and heard nothing", which is an empty
+    segment list. Collapsing the two sent users with a half-downloaded
+    model off to check their in/out points.
+    """
 
 # Filler words to strip (Swedish + English)
 # Note: "typ" removed -- it is a real Swedish word ("type/kind of")
@@ -235,7 +243,7 @@ class Transcriber:
                 return self._transcribe_faster_whisper(audio_path, on_progress)
         except Exception as e:
             log.error(f"Transcription failed: {e}")
-            return []
+            raise TranscriptionError(str(e)) from e
 
     def _transcribe_faster_whisper(self, audio_path: str, on_progress=None) -> list:
         kwargs = dict(
@@ -400,33 +408,11 @@ class Transcriber:
             return np.array([], dtype=np.float32)
         return np.concatenate(chunks)
 
-    def get_audio_duration(self, audio_path: str) -> float:
-        """Return audio duration in seconds, or 0.0 on failure.
-
-        soundfile first (cheap header read), ffprobe as the fallback for
-        codecs libsndfile can't open (AAC etc.) - a 0.0 here collapses the
-        progress estimate downstream, so fight for a real answer.
-        """
-        try:
-            import soundfile as sf
-            info = sf.info(audio_path)
-            if info.samplerate:
-                return info.frames / float(info.samplerate)
-        except Exception:
-            pass
-        try:
-            import subprocess
-            ffprobe = self._find_tool("ffprobe")
-            if not ffprobe:
-                return 0.0
-            proc = subprocess.run(
-                [ffprobe, "-v", "error", "-show_entries", "format=duration",
-                 "-of", "default=noprint_wrappers=1:nokey=1", audio_path],
-                capture_output=True, text=True, timeout=60,
-            )
-            return max(float(proc.stdout.strip()), 0.0)
-        except Exception:
-            return 0.0
+    @staticmethod
+    def get_audio_duration(audio_path: str) -> float:
+        """Return audio duration in seconds, or 0.0 on failure."""
+        import platforminfo
+        return platforminfo.audio_duration_s(audio_path)
 
     def _vad_clip_timestamps(self, audio_path: str):
         """Run silero-vad on the audio and return mlx_whisper clip_timestamps.

@@ -5,13 +5,25 @@ the render preset looks wrong, so it is a remedy: it has to work, and it has
 to leave the user's Deliver page exactly as it found it.
 """
 import os
+from pathlib import Path
+import sys
 import unittest
 
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-PRESET_SCRIPT = open(os.path.join(APP_DIR, "create_audio_only_preset.py"),
-                     encoding="utf-8").read()
-CAPTION = open(os.path.join(APP_DIR, "caption.py"), encoding="utf-8").read()
-UPDATE_SH = open(os.path.join(APP_DIR, "update.sh"), encoding="utf-8").read()
+sys.path.insert(0, APP_DIR)
+
+from resolve_api import _audio_codec_warning  # noqa: E402
+
+
+def _src(name):
+    return (Path(APP_DIR) / name).read_text(encoding="utf-8")
+
+
+PRESET_SCRIPT = _src("create_audio_only_preset.py")
+CAPTION = _src("caption.py")
+CHECK = _src("check.py")
+RESOLVE_API = _src("resolve_api.py")
+UPDATE_SH = _src("update.sh")
 
 
 class TestPresetScriptIsRunnable(unittest.TestCase):
@@ -62,18 +74,44 @@ class TestPresetScriptRestoresDeliver(unittest.TestCase):
         self.assertIn("DeleteRenderJob", tail)
 
 
+class FakeResolve:
+    """Just enough Resolve for the version gate."""
+
+    def __init__(self, version):
+        self._version = version
+
+    def GetVersionString(self):
+        return self._version
+
+
 class TestCodecAdviceIsActionable(unittest.TestCase):
     """A warning telling someone to run a command that cannot work on their
     version is worse than no warning."""
 
-    def test_warning_is_version_aware(self):
-        self.assertIn("def _resolve_major(", CAPTION)
-        self.assertIn("nothing to fix.", CAPTION)
+    def test_resolve_21_is_told_there_is_nothing_to_fix(self):
+        note = _audio_codec_warning({"AudioCodec": "aac"}, FakeResolve("21.1.1"))
+        self.assertIn("nothing to fix", note)
+        self.assertNotIn("create_audio_only_preset", note)
+
+    def test_older_resolve_is_told_wav_is_faster(self):
+        note = _audio_codec_warning({"AudioCodec": "aac"}, FakeResolve("18.6.6"))
+        self.assertIn("WAV/PCM preset transcribes faster", note)
+        self.assertNotIn("nothing to fix", note)
+
+    def test_pcm_says_nothing_at_all(self):
+        self.assertEqual("", _audio_codec_warning({"AudioCodec": "LinearPCM"},
+                                                  FakeResolve("21.1.1")))
+
+    def test_render_path_passes_the_resolve_handle(self):
+        # Without it the 21 branch above is unreachable on the render path,
+        # and Resolve 21 users were told to run a repair that cannot work.
+        self.assertIn("_audio_codec_warning(job_settings, _safe(get_resolve))",
+                      RESOLVE_API)
 
     def test_recreate_advice_is_gated_below_21(self):
-        self.assertIn("if _resolve_major(resolve) < 21:", CAPTION)
-        idx = CAPTION.find("if _resolve_major(resolve) < 21:")
-        following = CAPTION[idx:idx + 400]
+        self.assertIn("if _resolve_major(resolve) < 21:", CHECK)
+        idx = CHECK.find("if _resolve_major(resolve) < 21:")
+        following = CHECK[idx:idx + 400]
         self.assertIn("create_audio_only_preset.py --force", following,
                       "the recreate advice must sit inside the version gate")
 
@@ -88,9 +126,9 @@ class TestProgressCopyDoesNotRepeatItself(unittest.TestCase):
                          CAPTION)
 
     def test_rendering_detail_does_not_restate_the_title(self):
-        self.assertNotIn('f"Rendering... {pct_int}%"', CAPTION)
-        self.assertIn('_write_status("rendering_audio", f"{pct_int}% complete"',
-                      CAPTION)
+        self.assertNotIn('f"Rendering... {pct_int}%"', RESOLVE_API)
+        self.assertIn('status("rendering_audio", f"{pct_int}% complete"',
+                      RESOLVE_API)
 
 
 class TestStashNoticeSurvivesSetupOutput(unittest.TestCase):

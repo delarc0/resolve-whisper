@@ -246,7 +246,10 @@ SRT file appears next to the source file.
 
 Stable and feature-complete for what it does: it is fixed when something
 breaks, and there is no roadmap or support commitment. Issues and pull
-requests are welcome; answers are best-effort.
+requests are welcome; answers are best-effort. See
+[CONTRIBUTING.md](CONTRIBUTING.md) for what to include in a report (the
+health check output and your Resolve version answer most of them) and how to
+run the tests.
 
 ---
 

@@ -6,6 +6,7 @@ silent no-ops, which is the failure mode worth the most test surface: nothing
 crashes, nothing logs, the user just concludes the tool is broken.
 """
 import os
+from pathlib import Path
 import re
 import subprocess
 import sys
@@ -46,7 +47,7 @@ class TestLauncherContract(unittest.TestCase):
     """
 
     def setUp(self):
-        self.src = open(LAUNCHER, encoding="utf-8").read()
+        self.src = Path(LAUNCHER).read_text(encoding="utf-8")
 
     def test_launcher_returns_a_function(self):
         self.assertRegex(self.src, r"return function\s*\(",
@@ -60,7 +61,7 @@ class TestLauncherContract(unittest.TestCase):
 
     def test_every_preset_calls_the_returned_function(self):
         for path in preset_files():
-            src = open(path, encoding="utf-8").read()
+            src = Path(path).read_text(encoding="utf-8")
             name = os.path.basename(path)
             self.assertIn("dofile(launcher)", src, f"{name}: no launcher load")
             self.assertRegex(
@@ -75,13 +76,13 @@ class TestLauncherContract(unittest.TestCase):
         # the app-dir launcher out of step; that must be a message, not
         # another silent no-op.
         for path in preset_files():
-            src = open(path, encoding="utf-8").read()
+            src = Path(path).read_text(encoding="utf-8")
             self.assertIn('type(launch) ~= "function"', src,
                           f"{os.path.basename(path)}: no stale-launcher guard")
 
     def test_presets_do_not_assign_lab37_globals(self):
         for path in all_preset_files():
-            src = open(path, encoding="utf-8").read()
+            src = Path(path).read_text(encoding="utf-8")
             # re.M matters: without it "^" only matches the start of the
             # whole file, so this assertion could never fail.
             self.assertIsNone(
@@ -97,7 +98,7 @@ class TestUpdatePreset(unittest.TestCase):
     def setUp(self):
         path = os.path.join(PRESET_DIR, UPDATE_PRESET)
         self.assertTrue(os.path.exists(path), "the Update preset is missing")
-        self.src = open(path, encoding="utf-8").read()
+        self.src = Path(path).read_text(encoding="utf-8")
 
     def test_does_not_use_the_caption_launcher(self):
         # It may mention preset_launch.lua in a comment explaining why it
@@ -123,7 +124,7 @@ class TestUpdatePreset(unittest.TestCase):
 
     def test_is_installed_by_both_setup_scripts(self):
         for setup in ("setup.sh", "setup.ps1"):
-            src = open(os.path.join(APP_DIR, setup), encoding="utf-8").read()
+            src = Path(os.path.join(APP_DIR, setup)).read_text(encoding="utf-8")
             self.assertIn(UPDATE_PRESET, src,
                           f"{setup} does not install the Update preset")
 
@@ -133,7 +134,7 @@ class TestUpdateIsRefusedWhileBusy(unittest.TestCase):
     not happen underneath a running caption job."""
 
     def test_update_script_tests_the_run_lock(self):
-        src = open(os.path.join(APP_DIR, "update.sh"), encoding="utf-8").read()
+        src = Path(os.path.join(APP_DIR, "update.sh")).read_text(encoding="utf-8")
         self.assertIn("resolve_whisper.lock", src)
         self.assertIn("LOCK_EX | fcntl.LOCK_NB", src)
         self.assertIn("A caption job is running right now.", src)
@@ -194,7 +195,7 @@ class TestAutoPlaceGuard(unittest.TestCase):
     being sent to a Media Pool fallback that does not reliably work."""
 
     def setUp(self):
-        self.src = open(os.path.join(APP_DIR, "caption.py"), encoding="utf-8").read()
+        self.src = Path(APP_DIR, "caption.py").read_text(encoding="utf-8")
 
     def test_guard_counts_items_not_track_count(self):
         self.assertIn("existing_items = _subtitle_item_count()", self.src)
@@ -244,7 +245,7 @@ class TestVersionStamp(unittest.TestCase):
                         or v.startswith("unknown"), v)
 
     def test_run_log_is_stamped(self):
-        src = open(os.path.join(APP_DIR, "caption.py"), encoding="utf-8").read()
+        src = Path(os.path.join(APP_DIR, "caption.py")).read_text(encoding="utf-8")
         self.assertIn("resolve-whisper build", src,
                       "every run log must carry the build id")
 
