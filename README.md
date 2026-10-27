@@ -2,7 +2,7 @@
 
 AI-powered captions for DaVinci Resolve Studio. Runs locally on your GPU. No cloud, no subscription, no waiting.
 
-Built by LAB37 // lab37.tools
+Built by LAB37 // lab37.io
 
 ---
 
@@ -244,4 +244,4 @@ Bugs and questions: https://github.com/delarc0/resolve-whisper/issues
 
 ---
 
-LAB37 TOOLS // lab37.tools
+LAB37 TOOLS // lab37.io
