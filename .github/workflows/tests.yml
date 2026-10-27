@@ -1,0 +1,34 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python: ["3.10", "3.12", "3.14"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      # The suite covers pure logic: SRT shaping, caption chunking, the
+      # Deliver-state restore paths and the Lua preset contract. None of it
+      # needs Whisper, Resolve or a display, so the heavy backends
+      # (mlx-whisper on Mac, faster-whisper on Windows) stay out of CI.
+      # numpy and soundfile are the only imports the audio helpers make.
+      - name: Install test dependencies
+        run: python -m pip install --quiet numpy soundfile
+
+      - name: Run tests
+        run: python -m unittest discover -s tests -v

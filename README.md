@@ -1,6 +1,13 @@
 # LAB37 TOOLS: Resolve Whisper
 
+[![tests](https://github.com/delarc0/resolve-whisper/actions/workflows/tests.yml/badge.svg)](https://github.com/delarc0/resolve-whisper/actions/workflows/tests.yml)
+[![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 AI-powered captions for DaVinci Resolve Studio. Runs locally on your GPU. No cloud, no subscription, no waiting.
+
+Pick a preset in Resolve's Scripts menu; the captions land on the timeline.
+
+![The progress window during a run](docs/progress.png)
 
 Built by LAB37 // lab37.io
 
@@ -232,6 +239,14 @@ SRT file appears next to the source file.
   NVIDIA GPU used automatically via CUDA, else CPU)
 - ~3 GB disk space (AI model + dependencies; more on Windows GPU for the CUDA
   PyTorch build)
+
+---
+
+## Status
+
+Stable and feature-complete for what it does: it is fixed when something
+breaks, and there is no roadmap or support commitment. Issues and pull
+requests are welcome; answers are best-effort.
 
 ---
 
