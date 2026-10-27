@@ -48,10 +48,10 @@ class TestRestoreDeliverState(unittest.TestCase):
         p = FakeProject()
         caption._restore_deliver_state(
             p, {"format": "mp4", "codec": "H264"}, "single",
-            saved_target_dir="/Volumes/BASED/EXPORT",
+            saved_target_dir="/Volumes/Media/EXPORT",
             saved_custom_name="reel_01")
         self.assertEqual(p.output_writes(),
-                         [{"TargetDir": "/Volumes/BASED/EXPORT",
+                         [{"TargetDir": "/Volumes/Media/EXPORT",
                            "CustomName": "reel_01"}])
         self.assertEqual(p.fmt, ("mp4", "H264"))
         self.assertEqual(p.mode, "single")

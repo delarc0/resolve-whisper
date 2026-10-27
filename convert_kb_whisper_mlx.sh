@@ -3,7 +3,7 @@
 # Runs standalone in a scratch venv so nothing touches the tool's own .venv.
 set -euo pipefail
 
-WORK="/private/tmp/claude-501/-Users-erik-Documents-Anticlaw/2b2d96e9-bd3d-4051-a05c-e5449ef8777b/scratchpad/kbconv"
+WORK="${TMPDIR:-/tmp}/resolve-whisper-kbconv"
 OUT="$HOME/.cache/lab37-whisper/kb-whisper-large-mlx"
 LOG="$WORK/convert.log"
 

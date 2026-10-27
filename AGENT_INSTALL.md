@@ -16,9 +16,10 @@ password.
 - The user only ever needs to do three kinds of things: click things in
   DaVinci Resolve, click things in OS dialogs, and type their password when
   the system asks.
-- If a step fails twice and you can't resolve it, stop and tell the user to
-  message Erik at **hello@lab37.io** with a screenshot. Don't leave the
-  machine in a half-configured state without explaining what happened.
+- If a step fails twice and you can't resolve it, stop and report it at
+  https://github.com/delarc0/resolve-whisper/issues with a screenshot.
+  Don't leave the machine in a half-configured state without explaining
+  what happened.
 
 ## Already installed? Update instead
 
@@ -110,10 +111,10 @@ ls "/Applications/DaVinci Resolve/DaVinci Resolve.app"   # Resolve must be insta
 xcode-select -p               # command line tools (needed for git/brew)
 ```
 
-- **Intel Mac** → stop. The tool needs Apple Silicon (mlx). Tell the user to
-  contact Erik.
+- **Intel Mac** → stop. The tool needs Apple Silicon (mlx). There is no
+  Intel Mac backend; Windows with an NVIDIA GPU is the alternative.
 - **Resolve missing** → the user must install DaVinci Resolve **Studio**
-  first (they should have a LAB37 license key; if unsure, ask Erik). The free
+  first. Studio is the paid version and needs a license key; the free
   version will not work - the scripting API is Studio-only. You can't easily
   tell free from Studio on disk; the health check in Phase 4 will expose it.
 - **xcode-select fails** → run `xcode-select --install`, tell the user a

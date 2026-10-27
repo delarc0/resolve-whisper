@@ -4,7 +4,7 @@ Polls a JSON status file every 200ms; updates the title, message, and progress
 bar; auto-closes on stage='done' or stage='error'. Designed to be spawned
 as a subprocess so it doesn't block the transcription pipeline.
 
-Styled per apps/DESIGN.md (LAB37 charcoal shell) via ui_theme. The progress
+Styled via ui_theme (charcoal shell). The progress
 bar is Frame-based: native ttk.Progressbar renders Aqua blue and ignores
 styling on macOS.
 

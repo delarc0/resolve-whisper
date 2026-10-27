@@ -235,4 +235,13 @@ SRT file appears next to the source file.
 
 ---
 
+## License
+
+MIT - see [LICENSE](LICENSE). The Whisper models and DaVinci Resolve
+itself carry their own separate licenses.
+
+Bugs and questions: https://github.com/delarc0/resolve-whisper/issues
+
+---
+
 LAB37 TOOLS // lab37.tools

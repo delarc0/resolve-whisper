@@ -1,6 +1,6 @@
 """
 Whisper transcription engine with word-level timestamps.
-Forked from Bark's transcriber.py, adapted for file-based captioning.
+Adapted from a real-time dictation transcriber for file-based captioning.
 """
 import logging
 import os

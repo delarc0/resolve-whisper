@@ -25,7 +25,7 @@ local script = app_dir .. sep .. (is_win and "update.ps1" or "update.sh")
 local sf = io.open(script, "r")
 if sf then sf:close() else
     say("ERROR: update script not found at " .. script)
-    say("This install predates it; ask Erik for the one-time update steps.")
+    say("This install predates it; re-run setup from the repo to update.")
     return
 end
 

@@ -1,6 +1,6 @@
 """Shared Tk theme for Resolve Whisper windows.
 
-Design tokens from apps/DESIGN.md (LAB37 internal baseline, charcoal shell),
+Design tokens from the LAB37 charcoal baseline,
 OKLCH converted to hex for Tk. Chroma-0 neutrals, color only for status,
 0.90 off-white ceiling (anti-glare).
 
@@ -13,7 +13,7 @@ import tkinter as tk
 
 BRAND = "LAB37 TOOLS"
 
-# --- Tokens (apps/DESIGN.md Part 2) ---
+# --- Tokens ---
 BG = "#171717"          # canvas (oklch 0.205)
 CARD = "#242424"        # L1 surface (0.26)
 INPUT = "#2B2B2B"       # inputs, menus, tracks (0.29)
